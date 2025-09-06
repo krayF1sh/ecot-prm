@@ -305,7 +305,7 @@ def create_vllm_engines(
                 scheduling_strategy=scheduling_strategy,
             ).remote(
                 pretrain,
-                worker_cls="ppo.utils.vllm_utils2.WorkerWrap",
+                worker_cls="utils.vllm_utils2.WorkerWrap",
                 trust_remote_code=trust_remote_code,
                 tensor_parallel_size=tensor_parallel_size,
                 enforce_eager=enforce_eager,

@@ -6,9 +6,9 @@ from typing import List, TypedDict, Tuple, Dict, Any, Union
 from termcolor import cprint
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
-from ppo.envs.venv import SubprocVectorEnv
-from ppo.utils.util import add_info_board
-from ppo.envs.base import BaseEnv, EnvOutput
+from envs.venv import SubprocVectorEnv
+from utils.util import add_info_board
+from envs.base import BaseEnv, EnvOutput
 from collections import deque
 import gymnasium as gym
 

@@ -83,15 +83,15 @@ from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.queue import Queue as RayQueue
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from vllm import SamplingParams
-from ppo.envs.libero_env import LiberoEnv
-from ppo.models.critic import CriticVLA, CriticQwen, CriticFilm
-from ppo.models.prm import DummyRM, QwenProcessRM
-from ppo.utils.util import TimingManager
-from ppo.utils.vllm_utils2 import create_vllm_engines, init_process_group
-from ppo.utils.ray_utils import ray_noset_visible_devices, get_physical_gpu_id
-from ppo.utils.logging_utils import init_logger
-from ppo.envs.base import BaseEnv, EnvOutput
-from ppo.utils.fsdp_utils import (
+from envs.libero_env import LiberoEnv
+from models.critic import CriticVLA, CriticQwen, CriticFilm
+from models.prm import DummyRM, QwenProcessRM
+from utils.util import TimingManager
+from utils.vllm_utils2 import create_vllm_engines, init_process_group
+from utils.ray_utils import ray_noset_visible_devices, get_physical_gpu_id
+from utils.logging_utils import init_logger
+from envs.base import BaseEnv, EnvOutput
+from utils.fsdp_utils import (
     get_fsdp_wrap_policy_openvla,
     init_fn,
     log_gpu_memory_usage,

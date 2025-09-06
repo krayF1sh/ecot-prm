@@ -32,8 +32,8 @@ import wandb
 import pprint
 
 from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder, QwenPromptBuilder
-from ppo.envs.libero_env import LiberoEnv
-from ppo.utils.vllm_utils2 import create_vllm_engines
+from envs.libero_env import LiberoEnv
+from utils.vllm_utils2 import create_vllm_engines
 from vllm import SamplingParams
 import time
 import ray
@@ -48,7 +48,7 @@ from experiments.robot.openvla_utils import get_processor
 from experiments.robot.robot_utils import (
     set_seed_everywhere,
 )
-from ppo.utils.util import TimingManager
+from utils.util import TimingManager
 
 
 @dataclass

@@ -134,7 +134,7 @@ class QwenProcessRM(nn.Module):
 
 
 if __name__ == "__main__":
-    from ppo.conf.config_traj import RLConfig
+    from conf.config_traj import RLConfig
 
     all_args = RLConfig()
     
