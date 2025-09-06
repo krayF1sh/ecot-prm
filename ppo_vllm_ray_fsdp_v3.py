@@ -74,6 +74,7 @@ from transformers import (
     BitsAndBytesConfig,
 )
 from transformers.processing_utils import ProcessorMixin
+from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 from accelerate.utils import is_peft_model
 from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 from PIL import Image
@@ -82,7 +83,7 @@ from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.queue import Queue as RayQueue
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from vllm import SamplingParams
-from ppo.envs.libero_env import VLAEnv
+from ppo.envs.libero_env import LiberoEnv
 from ppo.models.critic import CriticVLA, CriticQwen, CriticFilm
 from ppo.models.prm import DummyRM, QwenProcessRM
 from ppo.utils.util import TimingManager
@@ -793,13 +794,14 @@ class PolicyTrainerRayProcess(RayProcess):
 
     def evaluate(
         self,
-        eval_envs: VLAEnv,
+        eval_envs: LiberoEnv,
         processor: ProcessorMixin,
-        param_prompt_Q: Queue,
+        prompt_ids_Q: Queue,
         response_ids_Q: Queue,
         device: torch.device,
     ) -> Dict[str, float]:
         logger.info(f"[Eval] Starting parallel evaluation")
+        dist.barrier()
 
         args = self.args
 
@@ -807,7 +809,6 @@ class PolicyTrainerRayProcess(RayProcess):
         if args.use_value_model:
             self.value_model.eval()
 
-        timer = TimingManager()
         completed_episodes = 0
         total_successes = 0
         episode_lengths = []
@@ -828,42 +829,40 @@ class PolicyTrainerRayProcess(RayProcess):
         obs, infos = eval_envs.reset()
 
         while True:
-            with timer.timer("model_inference"):
-                padding_side = "right"
-                num_channels = 3
-                if args.model_family == "openvla":
-                    num_channels = num_channels * 2  # stack for dinosiglip
-                image_height, image_width = self.hf_config.image_sizes
-                
-                local_token_obs = {
-                    "input_ids": torch.ones(len(obs["prompts"]), args.context_length - 1, device=device, dtype=torch.float32) * args.pad_token_id,
-                    "pixel_values": torch.zeros(len(obs["prompts"]), num_channels, image_height, image_width, device=device, dtype=torch.float32),
-                }
-                processed_obs = process_with_padding_side(
-                    processor, 
-                    obs["prompts"], 
-                    obs["pixel_values"], 
-                    padding=True, 
-                    padding_side=padding_side
-                ).to(device, dtype=torch.float32)
+            padding_side = "right"
+            num_channels = 3
+            if args.model_family == "openvla":
+                num_channels = num_channels * 2  # stack for dinosiglip
+            image_height, image_width = self.hf_config.image_sizes
+            
+            local_token_obs = {
+                "input_ids": torch.ones(len(obs["prompts"]), args.context_length - 1, device=device, dtype=torch.float32) * args.pad_token_id,
+                "pixel_values": torch.zeros(len(obs["prompts"]), num_channels, image_height, image_width, device=device, dtype=torch.float32),
+            }
+            processed_obs = process_with_padding_side(
+                processor, 
+                obs["prompts"], 
+                obs["pixel_values"], 
+                padding=True, 
+                padding_side=padding_side
+            ).to(device, dtype=torch.float32)
 
-                local_token_obs["input_ids"][:, :processed_obs["input_ids"].shape[1]] = processed_obs["input_ids"]
-                local_token_obs["input_ids"] = add_special_token(local_token_obs["input_ids"], pad_token_id=args.pad_token_id)
-                local_token_obs["pixel_values"][:] = processed_obs["pixel_values"]
-                del processed_obs
-                
-                local_token_obs["input_ids"] = local_token_obs["input_ids"].to(dtype=torch.long)
-                pixel_array = np.stack([np.array(img) for img in obs["pixel_values"]])
-                eval_token_obs = {
-                    "input_ids": local_token_obs["input_ids"].cpu().numpy(),
-                    "pixel_values": pixel_array,
-                }
-                param_prompt_Q.put(eval_token_obs)
-                response_data = response_ids_Q.get()
-                actions, response_ids, response_logprobs = response_data
+            local_token_obs["input_ids"][:, :processed_obs["input_ids"].shape[1]] = processed_obs["input_ids"]
+            local_token_obs["input_ids"] = add_special_token(local_token_obs["input_ids"], pad_token_id=args.pad_token_id)
+            local_token_obs["pixel_values"][:] = processed_obs["pixel_values"]
+            del processed_obs
+            
+            local_token_obs["input_ids"] = local_token_obs["input_ids"].to(dtype=torch.long)
+            pixel_array = np.stack([np.array(img) for img in obs["pixel_values"]])
+            eval_token_obs = {
+                "input_ids": local_token_obs["input_ids"].cpu().numpy(),
+                "pixel_values": pixel_array,
+            }
+            prompt_ids_Q.put(eval_token_obs)
+            response_data = response_ids_Q.get()
+            actions, response_ids, response_logprobs = response_data
 
-            with timer.timer("env_step"):
-                next_obs, rewards, dones, infos = eval_envs.step(actions)
+            next_obs, rewards, dones, infos = eval_envs.step(actions)
 
             if np.any(dones):
                 new_episodes = np.sum(dones)
@@ -907,14 +906,10 @@ class PolicyTrainerRayProcess(RayProcess):
             'episode_length': avg_episode_length,
             'episode_return': avg_episode_return,
         }
-        eval_stats.update(timer.get_log())
-        
         logger.info(f"[Eval] Completed parallel evaluation: "
                     f"Episodes: {completed_episodes}, Successes: {total_successes}, "
                     f"Success rate: {final_success_rate:.3f}, "
                     f"Avg episode length: {avg_episode_length:.1f}")
-        timer.close()
-
         self.model.train()
         if args.use_value_model:
             self.value_model.train()
@@ -926,7 +921,7 @@ class PolicyTrainerRayProcess(RayProcess):
         processor: ProcessorMixin,
         vllm_engines: List[ray.actor.ActorHandle],
         metrics_queue: Queue,
-        eval_envs: Optional[VLAEnv] = None,
+        eval_envs: Optional[LiberoEnv] = None,
     ):
         """Main training loop for PPO"""
         logger.info("Starting training loop")
@@ -943,8 +938,8 @@ class PolicyTrainerRayProcess(RayProcess):
         # args.env_gpu_id = self._rank
         args.env_gpu_id = 0
         logger.info(f"Current Device ID: {self._rank}; Task IDs: {args.task_ids}")
-        train_envs = VLAEnv(cfg=args, mode="train")
-        eval_envs = VLAEnv(cfg=args, mode="eval")
+        train_envs = LiberoEnv(cfg=args, mode="train")
+        eval_envs = LiberoEnv(cfg=args, mode="eval")
         action_dim = train_envs.action_space[0]
 
         padding_side = "right"  # Ref: https://github.com/openvla/openvla/issues/189
@@ -1025,9 +1020,7 @@ class PolicyTrainerRayProcess(RayProcess):
                     # Create a modified copy of the model for broadcasting
                     # instead of directly modifying the original model
                     with torch.no_grad():
-                        logger.info("Merging adapter")
                         model.merge_adapter()
-                        
                         state_dict = {}
                         for name, param in model.named_parameters():
                             processed_name = name.removeprefix("base_model.model.").replace(".base_layer", "")
@@ -1038,8 +1031,6 @@ class PolicyTrainerRayProcess(RayProcess):
                                         state_dict[key] = param.data
                                     else:
                                         state_dict[processed_name] = param.data
-                        
-                        logger.info("Unmerging adapter")
                         model.unmerge_adapter()
                 else:
                     # Get all parameters
@@ -1081,7 +1072,7 @@ class PolicyTrainerRayProcess(RayProcess):
         args.bos_token_id = processor.tokenizer.bos_token_id
         args.pad_token_id = processor.tokenizer.pad_token_id
 
-        generation_config = SamplingParams(
+        generation_config_train = SamplingParams(
             temperature=args.temperature,
             top_p=1.0,
             max_tokens=args.response_length,
@@ -1091,18 +1082,30 @@ class PolicyTrainerRayProcess(RayProcess):
             # seed=args.seed,   # NOTE: this will lead to deterministic results
             logprobs=1,
         )
+        generation_config_eval = SamplingParams(
+            temperature=1.0,
+            max_tokens=args.response_length,
+            include_stop_str_in_output=False,
+            detokenize=False,
+            n=1,
+            seed=args.seed,
+            logprobs=1,
+        )
         # logger.info("setup async queues")
-        response_ids_Q = Queue(maxsize=1)
-        param_prompt_Q = Queue(maxsize=1)
+        response_ids_Q_train = Queue(maxsize=1)
+        prompt_ids_Q_train = Queue(maxsize=1)
+        response_ids_Q_eval = Queue(maxsize=1)
+        prompt_ids_Q_eval = Queue(maxsize=1)
 
         def vllm_generate(
             generation_config: SamplingParams,
             response_ids_Q: Queue,
-            param_prompt_Q: Queue,
+            prompt_ids_Q: Queue,
         ):
             llm = vllm_engines[0]
             while True:
-                g_queries_list = param_prompt_Q.get()
+            # for _ in range(resume_training_step * args.num_steps, args.num_training_steps * args.num_steps + 1):
+                g_queries_list = prompt_ids_Q.get()
                 if g_queries_list is None:
                     break
                 prompt_token_ids = g_queries_list["input_ids"]
@@ -1132,20 +1135,29 @@ class PolicyTrainerRayProcess(RayProcess):
                         unnorm_key=args.unnorm_key,
                         )
                 )
-                logger.info(f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} seconds")
+                # logger.info(f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} seconds")
                 response_ids_Q.put((actions, response_ids, response_logprobs))
 
         resume_training_step = 1
         if accelerator.is_main_process:
-            thread = threading.Thread(
+            thread_train = threading.Thread(
                 target=vllm_generate,
                 args=(
-                    generation_config,
-                    response_ids_Q,
-                    param_prompt_Q,
+                    generation_config_train,
+                    response_ids_Q_train,
+                    prompt_ids_Q_train,
                 ),
             )
-            thread.start()
+            thread_train.start()
+            thread_eval = threading.Thread(
+                target=vllm_generate,
+                args=(
+                    generation_config_eval,
+                    response_ids_Q_eval,
+                    prompt_ids_Q_eval,
+                ),
+            )
+            thread_eval.start()
             logger.info("[vLLM] vllm generate thread starts")
 
         device = torch.device(self._local_rank)
@@ -1192,7 +1204,7 @@ class PolicyTrainerRayProcess(RayProcess):
         }
         # allocate the obs to rank0 to call vllm engines
         if accelerator.is_main_process:
-            param_prompt_Q.put(global_token_obs)
+            prompt_ids_Q_train.put(global_token_obs)
 
         
         local_rewards = None
@@ -1291,27 +1303,18 @@ class PolicyTrainerRayProcess(RayProcess):
         # episodic_lengths = Queue(maxsize=args.local_rollout_batch_size)
 
         # initial eval
-        # logger.info(f"[Eval] Running evaluation at training step 0")
-        # with timer.timer("evaluation"):
-        #     eval_metrics = self.evaluate(
-        #         eval_envs=eval_envs,
-        #         processor=processor,
-        #         # vllm_engines=vllm_engines,
-        #         param_prompt_Q=param_prompt_Q,
-        #         response_ids_Q=response_ids_Q,
-        #         # generation_config=generation_config,
-        #         device=device,
-        #     )
-        # eval_metrics_with_meta = {
-        #     "eval/success_rate": eval_metrics['success_rate'],
-        #     "eval/episode_length": eval_metrics['episode_length'], 
-        #     "eval/episode_return": eval_metrics['episode_return'],
-        #     "episode": episode,
-        #     "training_step": 0,
-        #     **timer.get_log(),
-        # }
-        # metrics_queue.put((eval_metrics_with_meta, global_step))
-        # logger.info(f"[Eval] Evaluation completed at training step 0")
+        logger.info(f"[Eval] Running evaluation at training step 0")
+        with timer.timer("evaluation"):
+            eval_metrics = self.evaluate(
+                eval_envs=eval_envs,
+                processor=processor,
+                prompt_ids_Q=prompt_ids_Q_eval,
+                response_ids_Q=response_ids_Q_eval,
+                device=device,
+            )
+        eval_metrics = {"eval/"+k: v for k, v in eval_metrics.items()}
+        metrics_queue.put((eval_metrics, global_step))
+        logger.info(f"[Eval] Evaluation completed at training step 0")
 
         # Begin training loop
         for training_step in range(resume_training_step, args.num_training_steps):
@@ -1346,7 +1349,7 @@ class PolicyTrainerRayProcess(RayProcess):
                     global_actions = torch.zeros(args.rollout_batch_size, action_dim, device=device, dtype=torch.float32)
                     if accelerator.is_main_process:
                         with timer.timer("vllm_generate"):
-                            response_data: tuple[np.ndarray, list[list[int]], list[list[float]]] = response_ids_Q.get()
+                            response_data: tuple[np.ndarray, list[list[int]], list[list[float]]] = response_ids_Q_train.get()
                             actions, g_response_token_ids, g_response_logprobs = response_data
                         
                         global_actions = torch.tensor(actions, device=device, dtype=torch.float32)
@@ -1461,7 +1464,7 @@ class PolicyTrainerRayProcess(RayProcess):
                     "pixel_values": torch.cat(gathered_pixel_values, dim=0).cpu().numpy(),
                 }
                 if accelerator.is_main_process:
-                    param_prompt_Q.put(global_token_obs)
+                    prompt_ids_Q_train.put(global_token_obs)
 
                 local_rewards = torch.tensor(local_rewards, device=device, dtype=torch.float32)
                 local_dones = torch.tensor(local_dones, device=device, dtype=torch.float32)
@@ -1715,7 +1718,6 @@ class PolicyTrainerRayProcess(RayProcess):
                     "objective/episodic_length": sum(episodic_lengths)/len(episodic_lengths) if len(episodic_lengths) > 0 else 0,
                 }
             )
-            # Update metrics dictionary
             metrics = {
                 "episode": episode,
                 "training_step": training_step,
@@ -1738,21 +1740,12 @@ class PolicyTrainerRayProcess(RayProcess):
                     eval_metrics = self.evaluate(
                         eval_envs=eval_envs,
                         processor=processor,
-                        # vllm_engines=vllm_engines,
-                        param_prompt_Q=param_prompt_Q,
-                        response_ids_Q=response_ids_Q,
-                        # generation_config=generation_config,
+                        prompt_ids_Q=prompt_ids_Q_eval,
+                        response_ids_Q=response_ids_Q_eval,
                         device=device,
                     )
-                eval_metrics_with_meta = {
-                    "eval/success_rate": eval_metrics['success_rate'],
-                    "eval/episode_length": eval_metrics['episode_length'], 
-                    "eval/episode_return": eval_metrics['episode_return'],
-                    "episode": episode,
-                    "training_step": training_step,
-                    **timer.get_log(),
-                }
-                metrics_queue.put((eval_metrics_with_meta, global_step))
+                eval_metrics = {"eval/"+k: v for k, v in eval_metrics.items()}
+                metrics_queue.put((eval_metrics, global_step))
                 logger.info(f"[Eval] Evaluation completed at training step {training_step}")
 
             # save steps

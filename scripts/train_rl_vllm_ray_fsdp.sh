@@ -29,9 +29,9 @@ export MUJOCO_GL=egl
 
 # data
 # POSTFIX=spatial
-# POSTFIX=goal
+POSTFIX=goal
 # POSTFIX=object
-POSTFIX=10
+# POSTFIX=10
 DATA_NAME=libero_${POSTFIX}
 DATA_ROOT=${DATA_NAME}_no_noops
 
@@ -87,10 +87,10 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --local_rollout_batch_size ${local_rollout_batch_size} \
     --local_rollout_forward_batch_size ${local_rollout_batch_size} \
     --actor_num_gpus_per_node "[${ACTOR_GPUS}]" \
-    --temperature 1.6 \
+    --temperature 1.8 \
     --num_epochs 1 \
-    --value_init_steps 2 \
-    --learning_rate 5e-6 \
+    --value_init_steps 1 \
+    --learning_rate 2e-5 \
     --value_learning_rate 5e-5 \
     --policy_max_grad_norm 1.0 \
     --value_max_grad_norm 1.0 \
@@ -117,10 +117,10 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --curriculum_temp 1.0 \
     --success_history_window 20 \
     --curriculum_recompute_freq 10 \
-    --save_freq 20 \
-    --eval_freq 20 \
+    --save_freq 10 \
+    --eval_freq 10 \
     --save_video True \
-    --use_wandb False \
+    --use_wandb True \
     --wandb_offline False \
     --wandb_project openvla \
     --wandb_entity openvla_cvpr \

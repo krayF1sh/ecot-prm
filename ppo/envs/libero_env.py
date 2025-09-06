@@ -10,6 +10,7 @@ from ppo.envs.venv import SubprocVectorEnv
 from ppo.utils.util import add_info_board
 from ppo.envs.base import BaseEnv, EnvOutput
 from collections import deque
+import gymnasium as gym
 
 # Append current directory so that interpreter can find experiments.robot
 sys.path.append("../..")
@@ -31,11 +32,7 @@ from experiments.robot.robot_utils import (
 DEBUG = False
 # DEBUG = True
 
-class VLAEnv(BaseEnv[EnvOutput, np.ndarray]):
-    """
-    Trajectory-level Reinforcement Learning environment for OpenVLA models in LIBERO tasks.
-    """
-
+class LiberoEnv(gym.Env):
     def __init__(self, cfg, mode="train"):
         """
         Initialize the environment.
@@ -139,148 +136,6 @@ class VLAEnv(BaseEnv[EnvOutput, np.ndarray]):
         Returns:
             Tuple[EnvOutput, Dict[str, Any]]: Initial observation and info dictionary
         """
-        obs = self._reset_impl()
-        info = {
-            "task_description": self.task_descriptions,
-            "step_count": self.step_count,
-        }
-        return obs, info
-
-    def step(self, action: np.ndarray, **kwargs) -> Tuple[EnvOutput, float, bool, Dict[str, Any]]:
-        return self._step_impl(action, **kwargs)
-
-    @property
-    def action_space(self) -> Tuple[int, ...]:
-        return (7,)
-    
-    @property
-    def observation_space(self) -> Dict[str, Tuple[int, ...]]:
-        return {
-            "pixel_values": (3, 224, 224),
-            "prompts": (1,),
-        }
-
-    def _get_success_rate(self, task_id, state_id):
-        """
-        Calculate success rate for a task-state pair.
-        
-        Args:
-            task_id: ID of the task (the actual task ID, not the environment index)
-            state_id: ID of the initial state
-            
-        Returns:
-            float: Success rate (0.0 to 1.0)
-        """
-        if task_id not in self.success_tracker or state_id not in self.success_tracker[task_id]:
-            return 0.0
-        
-        history = self.success_tracker[task_id][state_id]
-        if not history:
-            return 0.0
-        
-        return sum(history) / len(history)
-
-    def _update_success_tracker(self, task_id, state_id, success):
-        """
-        Update success tracker with the latest result.
-        
-        Args:
-            task_id: ID of the task (the actual task ID, not the environment index)
-            state_id: ID of the initial state
-            success: Whether the task was successful (True/False)
-        """
-        if task_id not in self.success_tracker:
-            self.success_tracker[task_id] = {}
-        
-        if state_id not in self.success_tracker[task_id]:
-            self.success_tracker[task_id][state_id] = deque(maxlen=self.success_history_window)
-            
-        history = self.success_tracker[task_id][state_id]
-        history.append(1.0 if success else 0.0)
-
-        # cprint(f"[DEBUG] history: {history}", "yellow")
-
-    def _sample_task_state_curriculum(self, task_idx):
-        """
-        Sample an initial state for a task using curriculum learning.
-        
-        Args:
-            task_idx: Index of the task in the environments
-            
-        Returns:
-            int: Selected state ID
-        """
-        # Get the actual task ID from the mapping
-        actual_task_id = self.task_id_mapping[task_idx]
-        
-        task_initial_states = self.initial_states_list[task_idx]
-        state_ids = list(range(len(task_initial_states)))
-        
-        # Calculate sampling weights (lower success rate = higher weight)
-        weights = []
-        for state_id in state_ids:
-            success_rate = self._get_success_rate(actual_task_id, state_id)
-            
-            # Option 1: Exponential weighting.
-            # weight = np.exp((1.0 - success_rate) / self.curriculum_temp)
-
-            # Option 2: Power law weighting.
-            # This option emphasizes states with very low success rates more strongly by raising the failure rate to a power.
-            # A lower temperature (larger exponent 1/T) will lead to a more pronounced focus on the hardest states.
-            weight = ((1.0 - success_rate + 1e-9) ** (1.0 / self.curriculum_temp)) # Add epsilon to avoid 0 ^ anything
-            
-            weights.append(weight)
-        
-        # Normalize weights to probabilities
-        total_weight = sum(weights)
-        probabilities = [w / total_weight for w in weights]
-
-        # Ensure minimum sampling probability
-        # probabilities = [max(p, self.curriculum_min_prob) for p in probabilities]
-        # probabilities = [p / sum(probabilities) for p in probabilities]
-
-        if DEBUG:
-            # cprint(f"[DEBUG] Probabilities: {probabilities}", "yellow")   # [50,]
-            # DEBUG: save the probabilities as histogram
-            import matplotlib.pyplot as plt
-            plt.hist(probabilities, bins=50, edgecolor='black')
-            plt.title('Histogram of Probabilities')
-            plt.xlabel('Probability')
-            plt.ylabel('Frequency')
-            curriculum_dir = os.path.join(self.exp_dir, "curriculum")
-            os.makedirs(curriculum_dir, exist_ok=True)
-            plt.savefig(os.path.join(curriculum_dir, f"task_{actual_task_id}.png"))
-            plt.close()
-            cprint(f"[DEBUG] Saved histogram of probabilities to {os.path.join(curriculum_dir, f'task_{actual_task_id}.png')}", "yellow")
-
-        # Sample based on probabilities
-        return random.choices(state_ids, weights=probabilities, k=1)[0]
-
-    def get_curriculum_stats(self):
-        """
-        Get curriculum statistics for logging.
-        
-        Returns:
-            dict: Statistics about the curriculum state
-        """
-        stats = {}
-        for task_id in self.success_tracker:
-            state_success_rates = []
-            for state_id in self.success_tracker[task_id]:
-                success_rate = self._get_success_rate(task_id, state_id)
-                state_success_rates.append(success_rate)
-            
-            # Compute average success rate for the task
-            if state_success_rates:
-                avg_success_rate = sum(state_success_rates) / len(state_success_rates)
-            else:
-                avg_success_rate = 0.0
-            
-            stats[f"task_{task_id}"] = avg_success_rate
-        
-        return stats
-
-    def _reset_impl(self) -> EnvOutput:
         # HACK: 10 tasks in total, so we setup >10 environments
         # as libero does not support multi-tasking within the vec env
         # to make sure we can cover all tasks in the suite
@@ -402,10 +257,14 @@ class VLAEnv(BaseEnv[EnvOutput, np.ndarray]):
                 }
                 img = add_info_board(img, **img_args)
                 self.replay_images[task_idx].append(img)
+        obs = EnvOutput(pixel_values=img_list, prompts=prompt_list)
+        info = {
+            "task_description": self.task_descriptions,
+            "step_count": self.step_count,
+        }
+        return obs, info
 
-        return EnvOutput(pixel_values=img_list, prompts=prompt_list)
-
-    def _step_impl(self, action: np.ndarray, **kwargs) -> Tuple[EnvOutput, np.ndarray, np.ndarray, Dict]:
+    def step(self, action: np.ndarray, **kwargs) -> Tuple[EnvOutput, float, bool, Dict[str, Any]]:
         self.step_count += 1
 
         step_count_tmp = self.step_count.copy()
@@ -584,6 +443,129 @@ class VLAEnv(BaseEnv[EnvOutput, np.ndarray]):
             infos["curriculum_stats"] = self.get_curriculum_stats()
 
         return next_obs, reward_np_list, dones, infos
+
+    @property
+    def action_space(self) -> Tuple[int, ...]:
+        return (7,)
+    
+    @property
+    def observation_space(self) -> Dict[str, Tuple[int, ...]]:
+        return {
+            "pixel_values": (3, 224, 224),
+            "prompts": (1,),
+        }
+
+    def _get_success_rate(self, task_id, state_id):
+        """
+        Calculate success rate for a task-state pair.
+        
+        Args:
+            task_id: ID of the task (the actual task ID, not the environment index)
+            state_id: ID of the initial state
+            
+        Returns:
+            float: Success rate (0.0 to 1.0)
+        """
+        if task_id not in self.success_tracker or state_id not in self.success_tracker[task_id]:
+            return 0.0
+        
+        history = self.success_tracker[task_id][state_id]
+        if not history:
+            return 0.0
+        
+        return sum(history) / len(history)
+
+    def _update_success_tracker(self, task_id, state_id, success):
+        """
+        Update success tracker with the latest result.
+        
+        Args:
+            task_id: ID of the task (the actual task ID, not the environment index)
+            state_id: ID of the initial state
+            success: Whether the task was successful (True/False)
+        """
+        if task_id not in self.success_tracker:
+            self.success_tracker[task_id] = {}
+        
+        if state_id not in self.success_tracker[task_id]:
+            self.success_tracker[task_id][state_id] = deque(maxlen=self.success_history_window)
+            
+        history = self.success_tracker[task_id][state_id]
+        history.append(1.0 if success else 0.0)
+
+        # cprint(f"[DEBUG] history: {history}", "yellow")
+
+    def _sample_task_state_curriculum(self, task_idx):
+        """
+        Sample an initial state for a task using curriculum learning.
+        
+        Args:
+            task_idx: Index of the task in the environments
+            
+        Returns:
+            int: Selected state ID
+        """
+        actual_task_id = self.task_id_mapping[task_idx]
+        task_initial_states = self.initial_states_list[task_idx]
+        state_ids = list(range(len(task_initial_states)))
+        
+        weights = []
+        for state_id in state_ids:
+            success_rate = self._get_success_rate(actual_task_id, state_id)
+            
+            # Option 1: Exponential weighting.
+            # weight = np.exp((1.0 - success_rate) / self.curriculum_temp)
+
+            # Option 2: Power law weighting.
+            # This option emphasizes states with very low success rates more strongly by raising the failure rate to a power.
+            # A lower temperature (larger exponent 1/T) will lead to a more pronounced focus on the hardest states.
+            weight = ((1.0 - success_rate + 1e-9) ** (1.0 / self.curriculum_temp)) # Add epsilon to avoid 0 ^ anything
+            weights.append(weight)
+        
+        total_weight = sum(weights)
+        probabilities = [w / total_weight for w in weights]
+        # Ensure minimum sampling probability
+        # probabilities = [max(p, self.curriculum_min_prob) for p in probabilities]
+        # probabilities = [p / sum(probabilities) for p in probabilities]
+
+        if DEBUG:
+            # cprint(f"[DEBUG] Probabilities: {probabilities}", "yellow")   # [50,]
+            # DEBUG: save the probabilities as histogram
+            import matplotlib.pyplot as plt
+            plt.hist(probabilities, bins=50, edgecolor='black')
+            plt.title('Histogram of Probabilities')
+            plt.xlabel('Probability')
+            plt.ylabel('Frequency')
+            curriculum_dir = os.path.join(self.exp_dir, "curriculum")
+            os.makedirs(curriculum_dir, exist_ok=True)
+            plt.savefig(os.path.join(curriculum_dir, f"task_{actual_task_id}.png"))
+            plt.close()
+            cprint(f"[DEBUG] Saved histogram of probabilities to {os.path.join(curriculum_dir, f'task_{actual_task_id}.png')}", "yellow")
+
+        return random.choices(state_ids, weights=probabilities, k=1)[0]
+
+    def get_curriculum_stats(self):
+        """
+        Get curriculum statistics for logging.
+        
+        Returns:
+            dict: Statistics about the curriculum state
+        """
+        stats = {}
+        for task_id in self.success_tracker:
+            state_success_rates = []
+            for state_id in self.success_tracker[task_id]:
+                success_rate = self._get_success_rate(task_id, state_id)
+                state_success_rates.append(success_rate)
+
+            if state_success_rates:
+                avg_success_rate = sum(state_success_rates) / len(state_success_rates)
+            else:
+                avg_success_rate = 0.0
+            
+            stats[f"task_{task_id}"] = avg_success_rate
+        
+        return stats
 
     def close(self):
         """Close the environment."""

@@ -61,6 +61,7 @@ dependencies = [
     "pandas",
     "termcolor",
     "tensorboard",
+    "gymnasium==0.29.1",
 ]
 
 [project.optional-dependencies]

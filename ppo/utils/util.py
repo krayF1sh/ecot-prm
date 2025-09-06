@@ -100,7 +100,7 @@ class TimingManager:
 
     def get_log(self):
         avg_times = {
-            f"timing/{k}": self.timing_stats[k]# / self.call_counts[k] 
+            f"timing/{k}": self.timing_stats[k] / self.call_counts[k] 
             for k in self.timing_stats
         }
         total_time = sum(self.timing_stats.values())
@@ -108,8 +108,8 @@ class TimingManager:
             f"timing/percent_{k}": (v / total_time) * 100 
             for k, v in self.timing_stats.items()
         }
-        # stats = {**avg_times, **time_percentages}
-        stats = {**time_percentages}
+        stats = {**avg_times, **time_percentages}
+        stats["timing/total_time"] = total_time
         return stats
 
     def close(self):

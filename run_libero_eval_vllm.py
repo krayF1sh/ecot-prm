@@ -32,7 +32,7 @@ import wandb
 import pprint
 
 from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder, QwenPromptBuilder
-from ppo.envs.libero_env import VLAEnv
+from ppo.envs.libero_env import LiberoEnv
 from ppo.utils.vllm_utils2 import create_vllm_engines
 from vllm import SamplingParams
 import time
@@ -292,7 +292,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 os.remove(os.path.join(video_dir, f))
 
     # Initialize vectorized environment
-    envs = VLAEnv(cfg, mode="eval")
+    envs = LiberoEnv(cfg, mode="eval")
     timer = TimingManager()
 
     # Main evaluation loop
