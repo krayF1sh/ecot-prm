@@ -22,13 +22,13 @@ class LiberoVecEnv(gym.Env):
         task_suite_name: str,
         task_ids: List[int],
         num_trials_per_task: int = 50,
+        seed: int = 42,
         max_episode_length: Optional[int] = None,
         resolution: Optional[int] = 256,
         resize_size: Optional[Tuple[int, int]] = None,
         model_family: str = "openvla",
         center_crop: bool = True,
         num_envs: Optional[int] = None,
-        seed: Optional[int] = None,
     ):
         super().__init__()
         self.task_suite_name = task_suite_name
@@ -40,7 +40,7 @@ class LiberoVecEnv(gym.Env):
         self.resize_size = resize_size or (224, 224)
         self.num_trials_per_task = num_trials_per_task
         self.resolution = resolution
-        self.seed_val = seed
+        self.seed = seed
         
         if len(task_ids) < self.num_envs:
             raise ValueError(f"Not enough task_ids ({len(task_ids)}) for n_envs ({self.num_envs})")
@@ -52,7 +52,6 @@ class LiberoVecEnv(gym.Env):
         self.task_descriptions = []
         self.max_steps = max_episode_length if max_episode_length is not None else self._get_max_step(self.task_suite_name)
         
-        # Define action and observation spaces
         self.action_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(7,), dtype=np.float32
         )
@@ -84,6 +83,7 @@ class LiberoVecEnv(gym.Env):
                 "bddl_file_name": bddl_file,
                 "camera_heights": resolution,
                 "camera_widths": resolution,
+                # "seed": self.seed + i,
             }
             env_creators.append(lambda args=env_args: OffScreenRenderEnv(**args))
         
@@ -102,10 +102,6 @@ class LiberoVecEnv(gym.Env):
         
     def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         # reset_start_time = time.time()
-        if seed is not None:
-            self.seed_val = seed
-            np.random.seed(seed)
-            
         self.step_counts = np.zeros(self.num_envs)
         
         init_states = []
@@ -175,8 +171,6 @@ class LiberoVecEnv(gym.Env):
         
         for i, obs in enumerate(obs_list):
             img = get_libero_image(obs, self.resize_size)
-            if isinstance(img, Image.Image):
-                img = np.array(img)
             pixel_values.append(img)
             prompts.append(self.task_descriptions[i])
         

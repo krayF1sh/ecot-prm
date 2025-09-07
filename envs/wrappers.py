@@ -42,30 +42,26 @@ class VideoWrapper(gym.Wrapper):
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         
-        # Reset frame buffers for all environments
         self.frames = [[] for _ in range(self.num_envs)]
         self.replay_images = {i: [] for i in range(self.num_envs)}
         self.current_step = 0
-        
-        # Capture initial frames if enabled
+
         pixel_values = obs["pixel_values"]
-        if isinstance(pixel_values, list):
-            for i in range(min(len(pixel_values), self.num_envs)):
-                if self.video_counts[i] < self.max_videos_per_env:
-                    img = pixel_values[i]
-                    if self.add_info_overlay and self.task_descriptions:
-                        img_args = {
-                            "goal": self.task_descriptions[i],
-                            "step": self.current_step,
-                        }
-                        img = add_info_board(img, **img_args)
-                    self.frames[i].append(img)
-                    self.replay_images[i].append(img)
+        for i in range(min(len(pixel_values), self.num_envs)):
+            if self.video_counts[i] < self.max_videos_per_env:
+                img = pixel_values[i]
+                if self.add_info_overlay and self.task_descriptions:
+                    img_args = {
+                        "goal": self.task_descriptions[i],
+                        "step": self.current_step,
+                    }
+                    img = add_info_board(img, **img_args)
+                self.frames[i].append(img)
+                self.replay_images[i].append(img)
         
         return obs, info
     
     def step(self, actions, **kwargs):
-        # Get additional info from kwargs for video overlay
         values = kwargs.get('values', None)
         log_probs = kwargs.get('log_probs', None)
         prm_rewards = kwargs.get('prm_rewards', None)
@@ -73,11 +69,10 @@ class VideoWrapper(gym.Wrapper):
         obs, rewards, dones, truncated, info = self.env.step(actions, **kwargs)
         self.current_step += 1
         
-        # Capture frames for each environment
         pixel_values = obs["pixel_values"]
         if isinstance(pixel_values, list):
             for i in range(min(len(pixel_values), self.num_envs)):
-                if self.video_counts[i] < self.max_videos_per_env and len(self.frames[i]) < 1000:  # Limit video length
+                if self.video_counts[i] < self.max_videos_per_env and len(self.frames[i]) < 1000:
                     img = pixel_values[i]
                     
                     if self.add_info_overlay:
@@ -100,17 +95,17 @@ class VideoWrapper(gym.Wrapper):
                     
                     self.frames[i].append(img)
                     self.replay_images[i].append(img)
-        
-        # Handle episode completion
+
         if np.any(dones):
             done_indices = np.where(dones)[0]
             for i in done_indices:
                 if self.frames[i] and self.video_counts[i] < self.max_videos_per_env:
                     self._save_video(i, rewards[i])
                     self.video_counts[i] += 1
+                    self.total_episodes += 1
                 
                 self.episode_counts[i] += 1
-                self.frames[i] = []  # Reset frame buffer for this environment
+                self.frames[i] = []
         
         return obs, rewards, dones, truncated, info
     
@@ -145,7 +140,6 @@ class VideoWrapper(gym.Wrapper):
         self.replay_images[env_idx] = []
     
     def close(self):
-        # Save any remaining videos
         for i in range(self.num_envs):
             if self.frames[i]:
                 self._save_video(i)
@@ -172,34 +166,22 @@ class CurriculumWrapper(gym.Wrapper):
         self.enable_logging = enable_logging
         self.exp_dir = exp_dir
         
-        # Get number of environments from LiberoVecEnv
         self.num_envs = env.num_envs
-        
-        # Success tracking: {task_id: {state_id: deque([successes])}}
         self.success_tracker = {}
         self.step_count = 0
         
-        # Get task suite info from wrapped env
         self.task_suite_name = env.task_suite_name
         self.task_descriptions = env.task_descriptions
-        
-        # Track current state IDs for each environment
         self.current_state_ids = [None] * self.num_envs
         self.task_id_mapping = getattr(env, 'task_id_mapping', None)
         
-        # Success tracking for episodes
         self.success = np.zeros(self.num_envs, dtype=bool)
-        self.total_episodes = 0
         self.initial_state_ids = []
         self.replay_images = {i: [] for i in range(self.num_envs)}
         
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        
-        # Reset episode tracking
         self.success = np.zeros(self.num_envs, dtype=bool)
-        
-        # Extract current state IDs if available in info
         if info and 'current_state_ids' in info:
             self.current_state_ids = info['current_state_ids']
         
@@ -211,34 +193,27 @@ class CurriculumWrapper(gym.Wrapper):
         obs, rewards, dones, truncated, info = self.env.step(actions, **kwargs)
         self.step_count += 1
         
-        # Update success tracker for completed episodes
         if np.any(dones):
             done_indices = np.where(dones)[0]
             
             for i in done_indices:
-                # Get success status
                 success = rewards[i] > 0
                 self.success[i] = success
                 
-                # Update success tracker if we have state info
                 if (self.current_state_ids[i] is not None and 
                     self.task_id_mapping is not None and 
                     i < len(self.task_id_mapping)):
-                    
-                    # Get actual task ID from mapping
                     actual_task_id = self.task_id_mapping[i]
                     state_id = self.current_state_ids[i]
                     
                     self._update_success_tracker(actual_task_id, state_id, success)
         
-        # Add curriculum stats to info periodically
         if self.step_count % self.recompute_freq == 0 and self.enable_logging:
             curriculum_stats = self.get_curriculum_stats()
             if 'curriculum_stats' not in info:
                 info['curriculum_stats'] = {}
             info['curriculum_stats'].update(curriculum_stats)
         
-        # Add step count info
         info['step_count_tmp'] = step_count_tmp
         
         return obs, rewards, dones, truncated, info
@@ -247,7 +222,6 @@ class CurriculumWrapper(gym.Wrapper):
         """Update success history for a task-state pair."""
         if task_id not in self.success_tracker:
             self.success_tracker[task_id] = {}
-        
         if state_id not in self.success_tracker[task_id]:
             self.success_tracker[task_id][state_id] = deque(maxlen=self.window_size)
         
@@ -301,8 +275,6 @@ class CurriculumWrapper(gym.Wrapper):
             'total_tasks': len(self.success_tracker),
             'total_states_tracked': sum(len(states) for states in self.success_tracker.values()),
         }
-        
-        # Per-task statistics
         for task_id, states in self.success_tracker.items():
             state_success_rates = []
             for _state_id, history in states.items():

@@ -480,25 +480,26 @@ def add_padding(sequences: List[List[int]], pad_token_id: int, length: int) -> L
         sequences[i] = sequences[i] + [pad_token_id] * (length - len(sequences[i]))
     return sequences
 
-def get_environment(cfg: Args, mode: str = "train"):
+def get_environment(args: Args, mode: str = "train"):
     env = LiberoVecEnv(
-        task_suite_name=cfg.task_suite_name,
+        task_suite_name=args.task_suite_name,
         # num_tasks_per_suite=cfg.num_tasks_per_suite,
-        task_ids=cfg.task_ids,
-        num_trials_per_task=cfg.num_trials_per_task,
+        task_ids=args.task_ids,
+        num_trials_per_task=args.num_trials_per_task,
         resize_size=(224, 224),
-        max_episode_length=cfg.max_env_length,
-        num_envs=cfg.n_rollout_threads,
-        seed=cfg.seed,
+        max_episode_length=args.max_env_length,
+        num_envs=args.n_rollout_threads,
+        seed=args.seed,
     )
-    if cfg.save_video:
-        env = VideoWrapper(env, save_dir=cfg.exp_dir)
-    if mode == "train" and cfg.use_curriculum:
+    if args.save_video:
+        save_dir = os.path.join(args.exp_dir, "rollouts")
+        env = VideoWrapper(env, save_dir=save_dir)
+    if mode == "train" and args.use_curriculum:
         env = CurriculumWrapper(
             env,
-            temp=cfg.curriculum_temp,
-            min_prob=cfg.curriculum_min_prob,
-            window_size=cfg.success_history_window,
+            temp=args.curriculum_temp,
+            min_prob=args.curriculum_min_prob,
+            window_size=args.success_history_window,
         )
     env = RecordEpisodeStatistics(env)
     return env
@@ -906,7 +907,7 @@ class PolicyTrainerRayProcess(RayProcess):
                 })
                 if self._rank == 0:  # Only log on rank 0
                     cprint(f"[Eval] Completed {completed_episodes}/{total_expected_episodes} episodes, "
-                              f"Success rate: {current_success_rate:.3f} ({total_successes}/{completed_episodes})",
+                              f"Success Rate: {current_success_rate:.3f} ({total_successes}/{completed_episodes})",
                               "cyan")
             
             # Break if all episodes in batch are done
@@ -960,8 +961,8 @@ class PolicyTrainerRayProcess(RayProcess):
         # args.env_gpu_id = self._rank
         args.env_gpu_id = 0
         logger.info(f"Current Device ID: {self._rank}; Task IDs: {args.task_ids}")
-        train_envs = get_environment(cfg=args, mode="train")
-        eval_envs = get_environment(cfg=args, mode="eval")
+        train_envs = get_environment(args=args, mode="train")
+        eval_envs = get_environment(args=args, mode="eval")
         action_dim = train_envs.action_space.shape[0]   # e.g., 7
 
         padding_side = "right"  # Ref: https://github.com/openvla/openvla/issues/189

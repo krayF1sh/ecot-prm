@@ -1,7 +1,12 @@
 import os
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
-
+from experiments.robot.libero.libero_utils import (
+    get_libero_dummy_action,
+    get_libero_image,
+)
+from PIL import Image
+import numpy as np
 
 benchmark_dict = benchmark.get_benchmark_dict()
 task_suite_name = "libero_10" # can also choose libero_spatial, libero_object, etc.
@@ -19,9 +24,10 @@ print(f"[info] retrieving task {task_id} from suite {task_suite_name}, the " + \
 # step over the environment
 env_args = {
     "bddl_file_name": task_bddl_file,
-    "camera_heights": 128,
-    "camera_widths": 128
+    "camera_heights": 256,
+    "camera_widths": 256
 }
+resize_size = (224, 224)
 env = OffScreenRenderEnv(**env_args)
 env.seed(0)
 env.reset()
@@ -32,7 +38,11 @@ env.set_init_state(init_states[init_state_id])
 dummy_action = [0.] * 7
 for step in range(10):
     obs, reward, done, info = env.step(dummy_action)
-
-    print(f"{obs}")
+    img = get_libero_image(obs, resize_size)
+    pil_img = Image.fromarray(img)
+    img_filename = f"libero_step_{step:02d}.png"
+    img_path = os.path.join(os.path.dirname(__file__), img_filename)
+    pil_img.save(img_path)
+    print(f"Saved image for step {step} to {img_path}")
 
 env.close()

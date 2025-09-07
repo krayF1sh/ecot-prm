@@ -29,9 +29,9 @@ export MUJOCO_GL=egl
 
 # data
 # POSTFIX=spatial
-# POSTFIX=goal
+POSTFIX=goal
 # POSTFIX=object
-POSTFIX=10
+# POSTFIX=10
 DATA_NAME=libero_${POSTFIX}
 DATA_ROOT=${DATA_NAME}_no_noops
 
@@ -58,13 +58,15 @@ MASTER_PORT=12345
 NUM_GPUS=$(echo $GPUS | tr ',' '\n' | wc -l)
 ACTOR_GPUS=$((NUM_GPUS - 1))    # the last GPU is used for vllm
 TOTAL_TASKS=$((ACTOR_GPUS * local_rollout_batch_size))
+
 # TASK_IDS=${2:-$(printf "0,%.0s" $(seq 1 $((TOTAL_TASKS))))} # Repeat 0 TOTAL_TASKS-1 times
 # TASK_IDS=${TASK_IDS%,} # Remove tailing comma
+TASK_IDS=${2}
 
 echo "GPUS=${GPUS}"
 echo "TASK_SUITE_NAME=${DATA_NAME}"
 echo "TOTAL_TASKS=${TOTAL_TASKS}"
-# echo "TASK_IDS=${TASK_IDS}"
+echo "TASK_IDS=${TASK_IDS}"
 echo "ACTOR_GPUS=${ACTOR_GPUS}"
 echo "per_device_train_batch_size=${per_device_train_batch_size}"
 echo "local_rollout_batch_size=${local_rollout_batch_size}"
@@ -119,7 +121,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --save_freq 10 \
     --eval_freq 10 \
     --save_video True \
-    --use_wandb False \
+    --use_wandb True \
     --wandb_offline False \
     --wandb_project openvla \
     --wandb_entity openvla_cvpr \
