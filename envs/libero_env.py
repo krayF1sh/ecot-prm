@@ -84,8 +84,10 @@ class LiberoVecEnv(gym.Env):
                 "bddl_file_name": bddl_file,
                 "camera_heights": resolution,
                 "camera_widths": resolution,
+                # "render_gpu_device_id": -1,
                 # "seed": self.seed_ + i,
             }
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
             env_creators.append(lambda args=env_args: OffScreenRenderEnv(**args))
         
         self.envs = SubprocVectorEnv(env_creators)

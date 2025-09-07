@@ -34,14 +34,7 @@ class VideoWrapper(gym.Wrapper):
         self.frames = [[] for _ in range(self.num_envs)]
         self.episode_counts = [0] * self.num_envs
         self.video_counts = [0] * self.num_envs
-        self.current_step = 0
-
-        # clear and create save directory
-        if os.path.exists(save_dir):
-            shutil.rmtree(save_dir)
-            cprint(f"[VideoWrapper] Removed existing directory {save_dir}", "red")
-        os.makedirs(save_dir, exist_ok=True)
-        
+        self.current_step = 0        
         self.task_descriptions = env.task_descriptions
         self.replay_images = {i: [] for i in range(self.num_envs)}
         self.total_episodes = 0

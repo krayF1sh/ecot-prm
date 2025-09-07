@@ -100,13 +100,10 @@ from utils.fsdp_utils import (
 )
 # OpenVLA-specific imports
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig, VISION_BACKBONE_TO_TIMM_ID
-from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction
-from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
-from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder
-from prismatic.util.data_utils import PaddedCollatorForActionPrediction
-from prismatic.vla.action_tokenizer import ActionTokenizer
-from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
-from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
+# from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder
+# from prismatic.vla.action_tokenizer import ActionTokenizer
+# from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
+# from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 from experiments.robot.openvla_utils import get_processor, register_custom_classes
 from experiments.robot.robot_utils import (
     disable_dropout_in_model,
@@ -449,6 +446,7 @@ def calculate_runtime_args(args: Args,):
         # args.task_ids = list(range(args.local_rollout_batch_size)) * args.world_size
         args.task_ids = [0 for _ in range(args.local_rollout_batch_size * args.world_size)]
 
+    args.task_ids = args.task_ids * args.world_size
     args.task_ids = np.array(args.task_ids)
     logger.info(f"[Args] task_ids: {args.task_ids}")
 
@@ -497,6 +495,10 @@ def get_environment(args: Args, mode: str = "train"):
     )
     if args.save_video:
         save_dir = os.path.join(args.exp_dir, "rollouts")
+        if os.path.exists(save_dir):
+            shutil.rmtree(save_dir)
+            cprint(f"[VideoWrapper] Removed existing directory {save_dir}", "red")
+        os.makedirs(save_dir, exist_ok=True)
         env = VideoWrapper(env, save_dir=save_dir)
     # if mode == "train" and args.use_curriculum:
     #     env = CurriculumWrapper(
@@ -527,7 +529,8 @@ class RayProcess:
         # environment variable for each actor, unless
         # RAY_EXPERIMENTAL_NOSET_*_VISIBLE_DEVICES is set, so
         # set local rank to 0 when the flag is not applicable.
-        os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0]) if ray_noset_visible_devices() else "0"
+        os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0]) if ray_noset_visible_devices() else "0"    # "0"
+        # os.environ["MUJOCO_EGL_DEVICE_ID"] = os.environ["CUDA_VISIBLE_DEVICES"]
 
         random.seed(self._rank)
         np.random.seed(self._rank)
@@ -591,14 +594,13 @@ class PolicyTrainerRayProcess(RayProcess):
             if getattr(args, "vllm_sync_backend", "nccl") == "nccl":
                 os.environ["NCCL_CUMEM_ENABLE"] = "0"
 
-        import torch.distributed
-        if not torch.distributed.is_initialized():
-            torch.distributed.init_process_group(backend="nccl")
+        if not dist.is_initialized():
+            dist.init_process_group(backend="nccl")
 
         self.args = args
 
         # build device mesh for FSDP
-        world_size = torch.distributed.get_world_size()
+        world_size = dist.get_world_size()
         logger.info(f"[Actor] World size: {world_size}")
         # self.device_mesh = init_device_mesh('cuda', mesh_shape=(world_size,), mesh_dim_names=['fsdp'])
         if args.sharding_strategy == "full-shard":
@@ -829,7 +831,7 @@ class PolicyTrainerRayProcess(RayProcess):
         device: torch.device,
     ) -> Dict[str, float]:
         logger.info(f"[Eval] Starting parallel evaluation")
-        dist.barrier()
+        # dist.barrier()
 
         args = self.args
 
@@ -850,7 +852,7 @@ class PolicyTrainerRayProcess(RayProcess):
             disable=(self._rank != 0)
         )
         obs, infos = eval_envs.reset()
-
+        step = 0
         while True:
             padding_side = "right"
             num_channels = 3
@@ -885,6 +887,7 @@ class PolicyTrainerRayProcess(RayProcess):
             response_data = response_ids_Q.get()
             actions, response_ids, response_logprobs = response_data
 
+            logger.info(f"🕹️🕹️🕹️ Env {step=}")
             next_obs, rewards, dones, _, infos = eval_envs.step(actions)
 
             if np.any(dones):
@@ -908,6 +911,7 @@ class PolicyTrainerRayProcess(RayProcess):
                               f"Success Rate: {current_success_rate:.3f} ({total_successes}/{completed_episodes})",
                               "cyan")
             
+            step += 1
             # Break if all episodes in batch are done
             # if np.allclose(eval_envs.initial_state_ids, -1):
             if completed_episodes >= total_expected_episodes:
@@ -1011,7 +1015,7 @@ class PolicyTrainerRayProcess(RayProcess):
         def _broadcast_to_vllm():
             use_prefix_cache = getattr(args, "enable_prefix_caching", False)
             cache_reset_refs = []
-            if use_prefix_cache and torch.distributed.get_rank() == 0:
+            if use_prefix_cache and dist.get_rank() == 0:
                 # clear prefix cache
                 for engine in vllm_engines:
                     cache_reset_refs.append(engine.reset_prefix_cache.remote())
@@ -1063,7 +1067,7 @@ class PolicyTrainerRayProcess(RayProcess):
                     is_last_param = (i == len(param_list) - 1)
                     
                     # Fire all vllm engines for broadcast
-                    if torch.distributed.get_rank() == 0:
+                    if dist.get_rank() == 0:
                         shape = param.shape
                         refs = [
                             engine.update_weight.remote(
@@ -1073,7 +1077,7 @@ class PolicyTrainerRayProcess(RayProcess):
                         ]
                     
                         # Only broadcast from rank 0
-                        torch.distributed.broadcast(param.data, 0, group=self.model_update_group)
+                        dist.broadcast(param.data, 0, group=self.model_update_group)
                         ray.get(refs)
                         refs = None  # Clear refs to free memory
             
@@ -1081,7 +1085,7 @@ class PolicyTrainerRayProcess(RayProcess):
                 ray.get(cache_reset_refs)
                 
             torch.cuda.empty_cache()
-            torch.distributed.barrier()
+            dist.barrier()
 
         if not args.debug:
             with timer.timer("broadcast"):
@@ -1320,7 +1324,7 @@ class PolicyTrainerRayProcess(RayProcess):
         # episodic_lengths = Queue(maxsize=args.local_rollout_batch_size)
 
         # initial eval
-        if args.init_eval:
+        if args.init_eval and accelerator.is_main_process:
             logger.info(f"[Eval] Running evaluation at training step 0")
             with timer.timer("evaluation"):
                 eval_metrics = self.evaluate(
@@ -1333,6 +1337,7 @@ class PolicyTrainerRayProcess(RayProcess):
             eval_metrics = {"eval/"+k: v for k, v in eval_metrics.items()}
             metrics_queue.put((eval_metrics, global_step))
             logger.info(f"[Eval] Evaluation completed at training step 0")
+        dist.barrier()
 
         # Begin training loop
         for training_step in range(resume_training_step, args.num_training_steps + 1):
@@ -1350,6 +1355,23 @@ class PolicyTrainerRayProcess(RayProcess):
                     logger.info(
                         f"🔥🔥🔥 Syncing weights using shared memory; Time to sync weights: {time.time() - start_time:.2f} seconds"
                     )
+                # eval
+                # if (args.eval_freq > 0 and training_step % args.eval_freq == 0):
+                if (args.eval_freq > 0 and training_step % args.eval_freq == 0):
+                    if accelerator.is_main_process:
+                        logger.info(f"[Eval] Running evaluation at training step {training_step}")
+                        with timer.timer("evaluation"):
+                            eval_metrics = self.evaluate(
+                                eval_envs=eval_envs,
+                                processor=processor,
+                                prompt_ids_Q=prompt_ids_Q_eval,
+                                response_ids_Q=response_ids_Q_eval,
+                                device=device,
+                            )
+                        eval_metrics = {"eval/"+k: v for k, v in eval_metrics.items()}
+                        metrics_queue.put((eval_metrics, global_step))
+                        logger.info(f"[Eval] Evaluation completed at training step {training_step}")
+                    dist.barrier()
 
             for step in range(args.num_steps):
                 global_step += args.rollout_batch_size
@@ -1752,20 +1774,6 @@ class PolicyTrainerRayProcess(RayProcess):
             torch.cuda.empty_cache()
             log_gpu_memory_usage("[Training] After training", rank=accelerator.process_index, logger=logger, level=logging.INFO)
 
-            if (args.eval_freq > 0 and training_step % args.eval_freq == 0):
-                logger.info(f"[Eval] Running evaluation at training step {training_step}")
-                with timer.timer("evaluation"):
-                    eval_metrics = self.evaluate(
-                        eval_envs=eval_envs,
-                        processor=processor,
-                        prompt_ids_Q=prompt_ids_Q_eval,
-                        response_ids_Q=response_ids_Q_eval,
-                        device=device,
-                    )
-                eval_metrics = {"eval/"+k: v for k, v in eval_metrics.items()}
-                metrics_queue.put((eval_metrics, global_step))
-                logger.info(f"[Eval] Evaluation completed at training step {training_step}")
-
             # save steps
             if args.save_freq > 0 and training_step % args.save_freq == 0:
                 checkpoint_dir = args.exp_dir
@@ -1964,23 +1972,23 @@ def main(args: Args):
     logger.info("======== all models initialized =========")
 
     # Save dataset statistics for inference
-    action_tokenizer = ActionTokenizer(processor.tokenizer)
-    batch_transform = RLDSBatchTransform(
-        action_tokenizer,
-        processor.tokenizer,
-        image_transform=processor.image_processor.apply_transform,
-        prompt_builder_fn=PurePromptBuilder if "v01" not in args.pretrained_checkpoint else VicunaV15ChatPromptBuilder,
-    )
-    logger.info(f"processor.image_processor.input_sizes: {processor.image_processor.input_sizes}")
-    vla_dataset = RLDSDataset(
-        args.data_root_dir,
-        args.dataset_name,
-        batch_transform,
-        resize_resolution=tuple(processor.image_processor.input_sizes[0][1:]),
-        shuffle_buffer_size=args.shuffle_buffer_size,
-        image_aug=args.image_aug,
-    )
-    save_dataset_statistics(vla_dataset.dataset_statistics, args.exp_dir)
+    # action_tokenizer = ActionTokenizer(processor.tokenizer)
+    # batch_transform = RLDSBatchTransform(
+    #     action_tokenizer,
+    #     processor.tokenizer,
+    #     image_transform=processor.image_processor.apply_transform,
+    #     prompt_builder_fn=PurePromptBuilder if "v01" not in args.pretrained_checkpoint else VicunaV15ChatPromptBuilder,
+    # )
+    # logger.info(f"processor.image_processor.input_sizes: {processor.image_processor.input_sizes}")
+    # vla_dataset = RLDSDataset(
+    #     args.data_root_dir,
+    #     args.dataset_name,
+    #     batch_transform,
+    #     resize_resolution=tuple(processor.image_processor.input_sizes[0][1:]),
+    #     shuffle_buffer_size=args.shuffle_buffer_size,
+    #     image_aug=args.image_aug,
+    # )
+    # save_dataset_statistics(vla_dataset.dataset_statistics, args.exp_dir)
 
     logger.info("======== all datasets initialized =========")
 
@@ -2006,7 +2014,8 @@ def main(args: Args):
         metrics, global_step = result
         for key, value in metrics.items():
             writer.add_scalar(key, value, global_step=global_step)
-        wandb.log(metrics, step=global_step)
+        if args.use_wandb:
+            wandb.log(metrics, step=global_step)
 
     ray.get(refs)
 
