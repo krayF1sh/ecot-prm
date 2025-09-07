@@ -71,9 +71,6 @@ echo "ACTOR_GPUS=${ACTOR_GPUS}"
 echo "per_device_train_batch_size=${per_device_train_batch_size}"
 echo "local_rollout_batch_size=${local_rollout_batch_size}"
 
-# --pretrained_checkpoint "MODEL/openvla-7b-finetuned-libero-${POSTFIX}" \
-# --pretrained_checkpoint "MODEL/openvla-7b" \
-
 # CUDA_VISIBLE_DEVICES=$GPUS python \
 CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     ppo_vllm_ray_fsdp_v3.py \
@@ -82,6 +79,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --dataset_name ${DATA_ROOT} \
     --task_suite_name ${DATA_NAME} \
     --num_trials_per_task 50 \
+    --task_ids "[${TASK_IDS}]" \
     --run_root_dir "checkpoints/${DATA_ROOT}/root" \
     --adapter_tmp_dir "checkpoints/${DATA_ROOT}/adapter" \
     --per_device_train_batch_size ${per_device_train_batch_size} \
@@ -89,7 +87,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --local_rollout_batch_size ${local_rollout_batch_size} \
     --local_rollout_forward_batch_size ${local_rollout_batch_size} \
     --actor_num_gpus_per_node "[${ACTOR_GPUS}]" \
-    --temperature 1.8 \
+    --temperature 1.7 \
     --num_epochs 1 \
     --value_init_steps 1 \
     --learning_rate 2e-5 \
@@ -121,13 +119,8 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --save_freq 10 \
     --eval_freq 10 \
     --save_video True \
-    --use_wandb True \
+    --use_wandb False \
     --wandb_offline False \
     --wandb_project openvla \
     --wandb_entity openvla_cvpr \
     --debug False
-
-# --task_ids "[${TASK_IDS}]" \
-
-# goal:
-# --max_env_length 512 \

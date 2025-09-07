@@ -74,8 +74,9 @@ from transformers import (
     BitsAndBytesConfig,
 )
 from transformers.processing_utils import ProcessorMixin
-from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
-import gymnasium as gym
+# from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
+# import gymnasium as gym
+import gym
 from envs.wrappers import VideoWrapper, CurriculumWrapper
 from accelerate.utils import is_peft_model
 from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
@@ -445,8 +446,9 @@ def calculate_runtime_args(args: Args,):
             f"`local_rollout_batch_size` must be the same as task nums (10), got {args.local_rollout_batch_size}"
         # args.task_ids = list(range(args.local_rollout_batch_size)) * args.world_size
         args.task_ids = [0 for _ in range(args.local_rollout_batch_size * args.world_size)]
-        args.task_ids = np.array(args.task_ids)
-        logger.info(f"[Args] task_ids: {args.task_ids}")
+
+    args.task_ids = np.array(args.task_ids)
+    logger.info(f"[Args] task_ids: {args.task_ids}")
 
     exp_id = (
         f"ppo+{args.dataset_name}"
@@ -494,14 +496,14 @@ def get_environment(args: Args, mode: str = "train"):
     if args.save_video:
         save_dir = os.path.join(args.exp_dir, "rollouts")
         env = VideoWrapper(env, save_dir=save_dir)
-    if mode == "train" and args.use_curriculum:
-        env = CurriculumWrapper(
-            env,
-            temp=args.curriculum_temp,
-            min_prob=args.curriculum_min_prob,
-            window_size=args.success_history_window,
-        )
-    env = RecordEpisodeStatistics(env)
+    # if mode == "train" and args.use_curriculum:
+    #     env = CurriculumWrapper(
+    #         env,
+    #         temp=args.curriculum_temp,
+    #         min_prob=args.curriculum_min_prob,
+    #         window_size=args.success_history_window,
+    #     )
+    # env = RecordEpisodeStatistics(env)
     return env
 
 class RayProcess:

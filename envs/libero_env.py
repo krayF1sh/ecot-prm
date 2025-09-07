@@ -1,7 +1,8 @@
 import os
 import time
 import numpy as np
-import gymnasium as gym
+# import gymnasium as gym
+import gym
 from typing import Dict, Any, Tuple, List, Optional
 from PIL import Image
 from libero.libero import benchmark, get_libero_path

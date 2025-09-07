@@ -1,6 +1,9 @@
 import os
+import shutil
+from termcolor import cprint
 import numpy as np
-import gymnasium as gym
+# import gymnasium as gym
+import gym
 from collections import deque
 from typing import Dict, List, Optional, Any, Tuple
 from experiments.robot.libero.libero_utils import save_rollout_video, get_libero_image
@@ -33,6 +36,10 @@ class VideoWrapper(gym.Wrapper):
         self.video_counts = [0] * self.num_envs
         self.current_step = 0
 
+        # clear and create save directory
+        if os.path.exists(save_dir):
+            shutil.rmtree(save_dir)
+            cprint(f"[VideoWrapper] Removed existing directory {save_dir}", "red")
         os.makedirs(save_dir, exist_ok=True)
         
         self.task_descriptions = env.task_descriptions
@@ -70,31 +77,29 @@ class VideoWrapper(gym.Wrapper):
         self.current_step += 1
         
         pixel_values = obs["pixel_values"]
-        if isinstance(pixel_values, list):
-            for i in range(min(len(pixel_values), self.num_envs)):
-                if self.video_counts[i] < self.max_videos_per_env and len(self.frames[i]) < 1000:
-                    img = pixel_values[i]
+        for i in range(min(len(pixel_values), self.num_envs)):
+            if self.video_counts[i] < self.max_videos_per_env and len(self.frames[i]) < 1000:
+                img = pixel_values[i]
+                
+                if self.add_info_overlay:
+                    img_args = {
+                        "goal": self.task_descriptions[i],
+                        "step": self.current_step,
+                        "action": actions[i],
+                    }
+                    if self.save_stats:
+                        if values is not None:
+                            img_args["value"] = values[i]
+                        if log_probs is not None:
+                            img_args["prob"] = np.exp(log_probs[i])
+                            img_args["entropy"] = (-log_probs[i]).mean()
+                        if prm_rewards is not None:
+                            img_args["prm_rewards"] = prm_rewards[i]
                     
-                    if self.add_info_overlay:
-                        img_args = {
-                            "goal": self.task_descriptions[i],
-                            "step": self.current_step,
-                            "action": actions[i],
-                        }
-                        
-                        if self.save_stats:
-                            if values is not None:
-                                img_args["value"] = values[i]
-                            if log_probs is not None:
-                                img_args["prob"] = np.exp(log_probs[i])
-                                img_args["entropy"] = (-log_probs[i]).mean()
-                            if prm_rewards is not None:
-                                img_args["prm_rewards"] = prm_rewards[i]
-                        
-                        img = add_info_board(img, **img_args)
-                    
-                    self.frames[i].append(img)
-                    self.replay_images[i].append(img)
+                    img = add_info_board(img, **img_args)
+                
+                self.frames[i].append(img)
+                self.replay_images[i].append(img)
 
         if np.any(dones):
             done_indices = np.where(dones)[0]
@@ -123,8 +128,8 @@ class VideoWrapper(gym.Wrapper):
         
         mp4_path = os.path.join(
             self.save_dir, 
-            f"rk_{self.env_gpu_id}--epi={self.total_episodes}--s={success}--"
-            f"task={env_idx}--inst={processed_task_description}.mp4"
+            f"rk={self.env_gpu_id}+epi={self.total_episodes}+s={success}+"
+            f"task={env_idx}+inst={processed_task_description}.mp4"
         )
         save_rollout_video(
             self.frames[env_idx], 
@@ -169,8 +174,7 @@ class CurriculumWrapper(gym.Wrapper):
         self.num_envs = env.num_envs
         self.success_tracker = {}
         self.step_count = 0
-        
-        self.task_suite_name = env.task_suite_name
+
         self.task_descriptions = env.task_descriptions
         self.current_state_ids = [None] * self.num_envs
         self.task_id_mapping = getattr(env, 'task_id_mapping', None)
