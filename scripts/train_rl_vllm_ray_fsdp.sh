@@ -29,9 +29,9 @@ export MUJOCO_GL=egl
 
 # data
 # POSTFIX=spatial
-POSTFIX=goal
+# POSTFIX=goal
 # POSTFIX=object
-# POSTFIX=10
+POSTFIX=10
 DATA_NAME=libero_${POSTFIX}
 DATA_ROOT=${DATA_NAME}_no_noops
 
@@ -116,11 +116,10 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --use_curriculum True \
     --curriculum_temp 1.0 \
     --success_history_window 20 \
-    --curriculum_recompute_freq 10 \
     --save_freq 10 \
     --eval_freq 10 \
     --save_video True \
-    --use_wandb True \
+    --use_wandb False \
     --wandb_offline False \
     --wandb_project openvla \
     --wandb_entity openvla_cvpr \

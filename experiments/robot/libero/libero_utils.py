@@ -25,7 +25,7 @@ def get_libero_env(task, model_family, resolution=256):
     return env, task_description
 
 
-def get_libero_dummy_action(model_family: str):
+def get_libero_dummy_action():
     """Get dummy/no-op action, used to roll out the simulation while the robot does nothing."""
     return [0, 0, 0, 0, 0, 0, -1]
 

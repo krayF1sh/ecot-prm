@@ -75,6 +75,8 @@ from transformers import (
 )
 from transformers.processing_utils import ProcessorMixin
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
+import gymnasium as gym
+from envs.wrappers import VideoWrapper, CurriculumWrapper
 from accelerate.utils import is_peft_model
 from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 from PIL import Image
@@ -83,14 +85,13 @@ from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.queue import Queue as RayQueue
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from vllm import SamplingParams
-from envs.libero_env import LiberoEnv
+from envs.libero_env import LiberoVecEnv
 from models.critic import CriticVLA, CriticQwen, CriticFilm
 from models.prm import DummyRM, QwenProcessRM
 from utils.util import TimingManager
 from utils.vllm_utils2 import create_vllm_engines, init_process_group
 from utils.ray_utils import ray_noset_visible_devices, get_physical_gpu_id
 from utils.logging_utils import init_logger
-from envs.base import BaseEnv, EnvOutput
 from utils.fsdp_utils import (
     get_fsdp_wrap_policy_openvla,
     init_fn,
@@ -214,8 +215,8 @@ class Args:
     """Minimum probability for sampling any task/state"""
     success_history_window: int = 5
     """Number of recent episodes to use for computing success rate"""
-    curriculum_recompute_freq: int = 10
-    """How often to recompute and log curriculum statistics (in episodes)"""
+    # curriculum_recompute_freq: int = 10
+    # """How often to recompute and log curriculum statistics (in episodes)"""
 
     # for debugging
     verbose: bool = False
@@ -472,13 +473,35 @@ def calculate_runtime_args(args: Args,):
     #     exp_id += "--image_aug"
     args.exp_id = exp_id
     cprint(f"[Args] Experiment ID: {exp_id}", "green")
-
     args.unnorm_key = args.task_suite_name
 
 def add_padding(sequences: List[List[int]], pad_token_id: int, length: int) -> List[List[int]]:
     for i in range(len(sequences)):
         sequences[i] = sequences[i] + [pad_token_id] * (length - len(sequences[i]))
     return sequences
+
+def get_environment(cfg: Args, mode: str = "train"):
+    env = LiberoVecEnv(
+        task_suite_name=cfg.task_suite_name,
+        # num_tasks_per_suite=cfg.num_tasks_per_suite,
+        task_ids=cfg.task_ids,
+        num_trials_per_task=cfg.num_trials_per_task,
+        resize_size=(224, 224),
+        max_episode_length=cfg.max_env_length,
+        num_envs=cfg.n_rollout_threads,
+        seed=cfg.seed,
+    )
+    # if cfg.save_video:
+    #     env = VideoWrapper(env, save_dir=cfg.run_root_dir)
+    # if mode == "train" and cfg.use_curriculum:
+    #     env = CurriculumWrapper(
+    #         env,
+    #         temp=cfg.curriculum_temp,
+    #         min_prob=cfg.curriculum_min_prob,
+    #         window_size=cfg.success_history_window,
+    #     )
+    # env = RecordEpisodeStatistics(env)
+    return env
 
 class RayProcess:
     def __init__(self, world_size, rank, master_addr, master_port):
@@ -794,7 +817,7 @@ class PolicyTrainerRayProcess(RayProcess):
 
     def evaluate(
         self,
-        eval_envs: LiberoEnv,
+        eval_envs: gym.Env,
         processor: ProcessorMixin,
         prompt_ids_Q: Queue,
         response_ids_Q: Queue,
@@ -862,7 +885,7 @@ class PolicyTrainerRayProcess(RayProcess):
             response_data = response_ids_Q.get()
             actions, response_ids, response_logprobs = response_data
 
-            next_obs, rewards, dones, infos = eval_envs.step(actions)
+            next_obs, rewards, dones, _, infos = eval_envs.step(actions)
 
             if np.any(dones):
                 new_episodes = np.sum(dones)
@@ -872,7 +895,7 @@ class PolicyTrainerRayProcess(RayProcess):
                 for i, (r, d) in enumerate(zip(rewards, dones)):
                     if d:
                         episode_returns.append(r)
-                        episode_length = eval_envs.step_count[i]
+                        episode_length = eval_envs.step_counts[i]
                         episode_lengths.append(episode_length)
 
                 current_success_rate = total_successes / completed_episodes if completed_episodes > 0 else 0.0
@@ -921,7 +944,6 @@ class PolicyTrainerRayProcess(RayProcess):
         processor: ProcessorMixin,
         vllm_engines: List[ray.actor.ActorHandle],
         metrics_queue: Queue,
-        eval_envs: Optional[LiberoEnv] = None,
     ):
         """Main training loop for PPO"""
         logger.info("Starting training loop")
@@ -938,9 +960,9 @@ class PolicyTrainerRayProcess(RayProcess):
         # args.env_gpu_id = self._rank
         args.env_gpu_id = 0
         logger.info(f"Current Device ID: {self._rank}; Task IDs: {args.task_ids}")
-        train_envs = LiberoEnv(cfg=args, mode="train")
-        eval_envs = LiberoEnv(cfg=args, mode="eval")
-        action_dim = train_envs.action_space[0]
+        train_envs = get_environment(cfg=args, mode="train")
+        eval_envs = get_environment(cfg=args, mode="eval")
+        action_dim = train_envs.action_space.shape[0]   # e.g., 7
 
         padding_side = "right"  # Ref: https://github.com/openvla/openvla/issues/189
 
@@ -1169,6 +1191,7 @@ class PolicyTrainerRayProcess(RayProcess):
         
         logger.info(f"🕹️🕹️🕹️ Env reset")
         local_obs, _ = train_envs.reset()
+        # print(f"{local_obs=}")
         # ------------------------------------------------------------
         # local_obs['prompts']: List[str]
         # local_obs['pixel_values']: List[Image.Image]
@@ -1206,7 +1229,6 @@ class PolicyTrainerRayProcess(RayProcess):
         if accelerator.is_main_process:
             prompt_ids_Q_train.put(global_token_obs)
 
-        
         local_rewards = None
         local_dones = torch.zeros(args.local_rollout_batch_size, device=device, dtype=torch.float32)
         local_actions = None
@@ -1294,8 +1316,6 @@ class PolicyTrainerRayProcess(RayProcess):
         g_response_token_ids = None
         g_response_logprobs = None
         log_gpu_memory_usage("[Rollout] Storage setup, before rollout", rank=accelerator.process_index, logger=logger, level=logging.INFO)
-
-        # self.save_model(self.model, processor, args.exp_dir)、
 
         resume_training_step = 1
         global_step = 0
@@ -1433,7 +1453,7 @@ class PolicyTrainerRayProcess(RayProcess):
                 }
                 logger.info(f"🕹️🕹️🕹️ Env {step=}")
                 with timer.timer("env_step"):
-                    local_obs, local_rewards, local_dones, local_infos = train_envs.step(
+                    local_obs, local_rewards, local_dones, _, local_infos = train_envs.step(
                         local_actions, 
                         values=values[step].detach().cpu().numpy(), 
                         log_probs=vllm_logprobs[step].detach().cpu().numpy(),
@@ -1474,9 +1494,9 @@ class PolicyTrainerRayProcess(RayProcess):
                 for i in range(args.local_rollout_batch_size):
                     if local_dones[i]:
                         episodic_returns.append(1.0 if local_rewards[i].item() > 0 else 0.0)
-                        episodic_lengths.append(local_infos["step_count_tmp"][i])
+                        episodic_lengths.append(local_infos["step_counts"][i])
                         # episodic_returns.put(1.0 if local_rewards[i].item() > 0 else 0.0)
-                        # episodic_lengths.put(local_infos["step_count_tmp"][i])
+                        # episodic_lengths.put(local_infos["step_counts"][i])
 
                 local_token_obs["input_ids"] = local_token_obs["input_ids"].to(dtype=torch.long)
                 queries_next = local_token_obs["input_ids"]
