@@ -33,6 +33,7 @@
 # limitations under the License.
 import sys
 import os
+from datetime import timedelta
 from argparse import Namespace
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -115,6 +116,7 @@ from experiments.robot.robot_utils import (
     process_with_padding_side,
     truncate_response,
     add_special_token,
+    add_padding,
     remove_padding,
     print_rich_single_line_metrics,
 )
@@ -127,6 +129,8 @@ logging.getLogger("imageio_ffmpeg").setLevel(logging.ERROR)
 
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+timeout_long_ncll = timedelta(seconds=36000)  # 10 hours
 
 # ray.init(runtime_env={"env_vars": {"RAY_DEBUG": "legacy"}})
 
@@ -477,10 +481,6 @@ def calculate_runtime_args(args: Args,):
     cprint(f"[Args] Experiment ID: {exp_id}", "green")
     args.unnorm_key = args.task_suite_name
 
-def add_padding(sequences: List[List[int]], pad_token_id: int, length: int) -> List[List[int]]:
-    for i in range(len(sequences)):
-        sequences[i] = sequences[i] + [pad_token_id] * (length - len(sequences[i]))
-    return sequences
 
 def get_environment(args: Args, mode: str = "train"):
     env = LiberoVecEnv(
@@ -500,13 +500,13 @@ def get_environment(args: Args, mode: str = "train"):
             cprint(f"[VideoWrapper] Removed existing directory {save_dir}", "red")
         os.makedirs(save_dir, exist_ok=True)
         env = VideoWrapper(env, save_dir=save_dir)
-    # if mode == "train" and args.use_curriculum:
-    #     env = CurriculumWrapper(
-    #         env,
-    #         temp=args.curriculum_temp,
-    #         min_prob=args.curriculum_min_prob,
-    #         window_size=args.success_history_window,
-    #     )
+    if mode == "train" and args.use_curriculum:
+        env = CurriculumWrapper(
+            env,
+            temp=args.curriculum_temp,
+            min_prob=args.curriculum_min_prob,
+            window_size=args.success_history_window,
+        )
     # env = RecordEpisodeStatistics(env)
     return env
 
@@ -595,7 +595,7 @@ class PolicyTrainerRayProcess(RayProcess):
                 os.environ["NCCL_CUMEM_ENABLE"] = "0"
 
         if not dist.is_initialized():
-            dist.init_process_group(backend="nccl")
+            dist.init_process_group(backend="nccl", timeout=timeout_long_ncll)
 
         self.args = args
 
@@ -814,7 +814,8 @@ class PolicyTrainerRayProcess(RayProcess):
         hf_config = self.hf_config
         backbone_id = hf_config.vision_backbone_id
         if backbone_id.startswith("dinosiglip"):
-            timm_model_ids = VISION_BACKBONE_TO_TIMM_ID[backbone_id]    # e.g., ["vit_large_patch14_reg4_dinov2.lvd142m", "vit_so400m_patch14_siglip_224"]
+            timm_model_ids = VISION_BACKBONE_TO_TIMM_ID[backbone_id]    
+            # e.g., ["vit_large_patch14_reg4_dinov2.lvd142m", "vit_so400m_patch14_siglip_224"]
             image_size = hf_config.image_sizes[0]
             patch_size = int(timm_model_ids[0].split("patch")[1].split("_")[0])   # HACK: get patch_size from timm_model_ids
             num_image_tokens = get_num_patches(image_size, patch_size)
@@ -1007,6 +1008,7 @@ class PolicyTrainerRayProcess(RayProcess):
                 world_size=world_size,
                 rank=0,
                 group_name=group_name,
+                timeout=timeout_long_ncll,
             )
             ray.get(refs)
             logger.info("[vLLM] Initialized vLLM engines")
@@ -1203,10 +1205,16 @@ class PolicyTrainerRayProcess(RayProcess):
 
         # LOGIC: get local tensor obs for gather, gather to all GPUs, then concat to global tensor obs to call vllm engines
         local_token_obs = {
-            "input_ids": torch.ones(args.local_rollout_batch_size, args.context_length - 1, device=device, dtype=torch.float32) * args.pad_token_id,
-            "pixel_values": torch.zeros(args.local_rollout_batch_size, num_channels, image_height, image_width, device=device, dtype=torch.float32),
+            "input_ids": torch.ones(
+                args.local_rollout_batch_size, args.context_length - 1, device=device, dtype=torch.float32
+            ) * args.pad_token_id,
+            "pixel_values": torch.zeros(
+                args.local_rollout_batch_size, num_channels, image_height, image_width, device=device, dtype=torch.float32
+            ),
         }
-        processed_obs = process_with_padding_side(processor, local_obs["prompts"], local_obs["pixel_values"], padding=True, padding_side=padding_side).to(device, dtype=torch.float32)
+        processed_obs = process_with_padding_side(
+            processor, local_obs["prompts"], local_obs["pixel_values"], padding=True, padding_side=padding_side
+        ).to(device, dtype=torch.float32)
         local_token_obs["input_ids"][:, :processed_obs["input_ids"].shape[1]] = processed_obs["input_ids"]
         local_token_obs["input_ids"] = add_special_token(local_token_obs["input_ids"], pad_token_id=args.pad_token_id)
         local_token_obs["pixel_values"][:] = processed_obs["pixel_values"]
@@ -1393,8 +1401,12 @@ class PolicyTrainerRayProcess(RayProcess):
                             actions, g_response_token_ids, g_response_logprobs = response_data
                         
                         global_actions = torch.tensor(actions, device=device, dtype=torch.float32)
-                        g_vllm_responses[:] = torch.tensor(add_padding(g_response_token_ids, args.pad_token_id, args.response_length), device=device, dtype=torch.float32)
-                        g_vllm_logprobs[:] = torch.tensor(add_padding(g_response_logprobs, 0.0, args.response_length), device=device, dtype=torch.float32)
+                        g_vllm_responses[:] = torch.tensor(add_padding(
+                            g_response_token_ids, args.pad_token_id, args.response_length
+                        ), device=device, dtype=torch.float32)
+                        g_vllm_logprobs[:] = torch.tensor(add_padding(
+                            g_response_logprobs, 0.0, args.response_length
+                        ), device=device, dtype=torch.float32)
                     with timer.timer("broadcast"):
                         dist.broadcast(g_vllm_responses, src=0)
                         dist.broadcast(g_vllm_logprobs, src=0)
@@ -1420,7 +1432,9 @@ class PolicyTrainerRayProcess(RayProcess):
 
                         if padding_side == "right":
                             last_context_length = first_true_indices(query == args.pad_token_id)
-                            query_response = torch.ones(query.shape[0], query.shape[1] + response.shape[1], device=device, dtype=torch.long) * args.pad_token_id
+                            query_response = torch.ones(
+                                query.shape[0], query.shape[1] + response.shape[1], device=device, dtype=torch.long
+                            ) * args.pad_token_id
                             context_length = last_context_length + self.max_image_tokens
                             for j in range(query.shape[0]):
                                 query_response[j, :last_context_length[j]] = query[j, :last_context_length[j]]
@@ -1468,8 +1482,12 @@ class PolicyTrainerRayProcess(RayProcess):
                     torch.cuda.empty_cache()
 
                 local_token_obs = {
-                    "input_ids": torch.ones(args.local_rollout_batch_size, args.context_length - 1, device=device, dtype=torch.float32) * args.pad_token_id,
-                    "pixel_values": torch.zeros(args.local_rollout_batch_size, num_channels, image_height, image_width, device=device, dtype=torch.float32),
+                    "input_ids": torch.ones(
+                        args.local_rollout_batch_size, args.context_length - 1, device=device, dtype=torch.float32
+                    ) * args.pad_token_id,
+                    "pixel_values": torch.zeros(
+                        args.local_rollout_batch_size, num_channels, image_height, image_width, device=device, dtype=torch.float32
+                    ),
                 }
                 logger.info(f"🕹️🕹️🕹️ Env {step=}")
                 with timer.timer("env_step"):
@@ -1485,7 +1503,9 @@ class PolicyTrainerRayProcess(RayProcess):
                     for stat_key, stat_value in curriculum_stats.items():
                         local_metrics[f"curriculum/{stat_key}"] = torch.tensor(stat_value, device=device)
                 
-                processed_obs = process_with_padding_side(processor, local_obs["prompts"], local_obs["pixel_values"], padding=True, padding_side=padding_side).to(device, dtype=torch.float32)
+                processed_obs = process_with_padding_side(
+                    processor, local_obs["prompts"], local_obs["pixel_values"], padding=True, padding_side=padding_side
+                ).to(device, dtype=torch.float32)
                 local_token_obs["input_ids"][:, :processed_obs["input_ids"].shape[1]] = processed_obs["input_ids"]
                 local_token_obs["input_ids"] = add_special_token(local_token_obs["input_ids"], pad_token_id=args.pad_token_id)
                 local_token_obs["pixel_values"][:] = processed_obs["pixel_values"]
@@ -1539,7 +1559,9 @@ class PolicyTrainerRayProcess(RayProcess):
                         query = queries_next[i : i + args.local_rollout_forward_batch_size]
                         pixel_value = pixel_values_next[i : i + args.local_rollout_forward_batch_size]
                         with torch.no_grad():
-                            next_value[i : i + args.local_rollout_forward_batch_size] = get_reward(self.value_model, query, pixel_value, args.pad_token_id)
+                            next_value[i : i + args.local_rollout_forward_batch_size] = get_reward(
+                                self.value_model, query, pixel_value, args.pad_token_id
+                            )
                 else:
                     next_value = torch.zeros(args.local_rollout_batch_size, device=device)
 
@@ -1579,7 +1601,8 @@ class PolicyTrainerRayProcess(RayProcess):
                 self.value_model.train()
             with timer.timer("train_loop"):
                 for epoch_idx in range(args.num_epochs):
-                    b_inds = np.random.permutation(args.train_batch_size)   # each thread has its own permutation, dealing with its own local rollout batch
+                    b_inds = np.random.permutation(args.train_batch_size)   
+                    # each thread has its own permutation, dealing with its own local rollout batch
                     minibatch_idx = 0
                     for mini_batch_start in range(
                         0, args.train_batch_size, args.local_mini_batch_size
@@ -1634,7 +1657,9 @@ class PolicyTrainerRayProcess(RayProcess):
 
                             if padding_side == "right":
                                 last_context_length = first_true_indices(mb_queries == args.pad_token_id)
-                                mb_query_responses = torch.ones(mb_queries.shape[0], mb_queries.shape[1] + mb_responses.shape[1], device=device, dtype=torch.long) * args.pad_token_id
+                                mb_query_responses = torch.ones(
+                                    mb_queries.shape[0], mb_queries.shape[1] + mb_responses.shape[1], device=device, dtype=torch.long
+                                ) * args.pad_token_id
                                 context_length = last_context_length + self.max_image_tokens
                                 for j in range(mb_queries.shape[0]):
                                     mb_query_responses[j, :last_context_length[j]] = mb_queries[j, :last_context_length[j]]

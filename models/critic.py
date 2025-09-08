@@ -61,14 +61,10 @@ class CriticVLA(nn.Module):
             **kwargs,
         ):
         """
-        input_ids: [B, L], e.g. [2, 292]
-        attention_mask: [B, L], e.g. [2, 292]
+        input_ids: [B, L], e.g. [2, 320]
+        attention_mask: [B, L], e.g. [2, 320]
         pixel_values: [B, 6, H, W], e.g. [2, 6, 224, 224]
         """
-        # with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16): 
-
-        # print(f"{pixel_values.mean((1, 2, 3))=}")
-
         transformer_outputs = self.rwtranrsformer(
             input_ids=input_ids, 
             attention_mask=attention_mask, 
@@ -76,15 +72,16 @@ class CriticVLA(nn.Module):
             output_hidden_states=True,
             **kwargs,
         )
-
-        hidden_states = transformer_outputs.hidden_states[-1] # [B, L, D], e.g. [2, 292, 4096]
-        # Option 1: use the last token
-        # hidden_states = hidden_states[:, -1, :].float()  # [X, all the same]
+        hidden_states = transformer_outputs.hidden_states[-1] # [B, L, D], e.g. [2, 320, 4096]
+        # e.g., 1 bos token + 256 pixel tokens + 40 text tokens + (64 - 1 - 40) padding tokens
+        # print(f"{len(transformer_outputs.hidden_states)=}") # 33
+        # print(f"{hidden_states.shape=}")
+        # print(f"{hidden_states.mean(dim=-1)=}")
+        # Option 1: use the last token (FIXME: this case should ignore the padding tokens at the end)
+        # hidden_states = hidden_states[:, -1, :].float()  # [B, D]
         # Option 2: use the mean of all tokens
         text_features = hidden_states.mean(dim=1).float()   # [B, D], e.g. [2, 4096]
-
-        # print(f"{text_features.mean(-1)=}")
-
+        # print(f"{text_features=}")
         x = self.relu(self.v_head_mlp1(text_features))
         x = self.relu(self.v_head_mlp2(x))
         values = self.v_head_mlp3(x).squeeze(-1)

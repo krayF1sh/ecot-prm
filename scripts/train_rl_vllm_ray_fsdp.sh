@@ -2,7 +2,8 @@
 # Usage: 
 #   bash scripts/train_rl_vllm_ray_fsdp.sh <gpus> <task_ids>
 # Example: 
-#   bash scripts/train_rl_vllm_ray_fsdp.sh 2,3,4,5,6,7 0,1,2,3,4,5,6,7,8,9
+#   bash scripts/train_rl_vllm_ray_fsdp.sh
+#   bash scripts/train_rl_vllm_ray_fsdp.sh 0,1,2,3,4,5,6,7 0,1,2,3,4,5,6,7,8,9
 # Devices: more than 2 A100 GPUs; 6 GPUs for RTX 3090s backward, but the second broadcast will oom
 # Parameters:
 # Rollout phase: num_envs = local_rollout_batch_size * world_size
@@ -52,7 +53,7 @@ local_rollout_batch_size=10
 # local_rollout_batch_size=1
 
 # GPU allocation
-GPUS=${1:-"0,1,2,3"}
+GPUS=${1:-"0,1,2,3,4,5,6,7"}    # 8 GPUs
 MASTER_ADDR=localhost
 MASTER_PORT=12345
 NUM_GPUS=$(echo $GPUS | tr ',' '\n' | wc -l)
@@ -61,7 +62,7 @@ TOTAL_TASKS=$((ACTOR_GPUS * local_rollout_batch_size))
 
 # TASK_IDS=${2:-$(printf "0,%.0s" $(seq 1 $((TOTAL_TASKS))))} # Repeat 0 TOTAL_TASKS-1 times
 # TASK_IDS=${TASK_IDS%,} # Remove tailing comma
-TASK_IDS=${2}
+TASK_IDS=${2:-"0,1,2,3,4,5,6,7,8,9"}    # All tasks
 
 echo "GPUS=${GPUS}"
 echo "TASK_SUITE_NAME=${DATA_NAME}"
@@ -113,7 +114,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --value_use_lora False \
     --clip_vloss False \
     --norm_adv False \
-    --use_curriculum True \
+    --use_curriculum False \
     --curriculum_temp 1.0 \
     --success_history_window 20 \
     --save_freq 10 \
