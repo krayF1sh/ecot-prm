@@ -53,7 +53,8 @@ local_rollout_batch_size=10
 # local_rollout_batch_size=1
 
 # GPU allocation
-GPUS=${1:-"0,1,2,3,4,5,6,7"}    # 8 GPUs
+# GPUS=${1:-"0,1,2,3,4,5,6,7"}    # 8 GPUs
+GPUS=${1:-"0,1,2,3"}    # 4 GPUs
 MASTER_ADDR=localhost
 MASTER_PORT=12345
 NUM_GPUS=$(echo $GPUS | tr ',' '\n' | wc -l)
@@ -90,21 +91,20 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --actor_num_gpus_per_node "[${ACTOR_GPUS}]" \
     --temperature 1.7 \
     --num_epochs 1 \
-    --value_init_steps 1 \
+    --value_init_steps 3 \
     --learning_rate 2e-5 \
-    --value_learning_rate 5e-5 \
+    --value_learning_rate 2e-4 \
     --policy_max_grad_norm 1.0 \
     --value_max_grad_norm 1.0 \
     --cliprange_high 0.4 \
     --cliprange_low 0.2 \
     --gamma 1.0 \
-    --num_steps 512 \
-    --max_env_length 512 \
+    --num_steps 256 \
     --total_episodes 100000 \
     --vllm_tensor_parallel_size 1 \
     --vllm_enforce_eager True \
     --enable_prefix_caching False \
-    --gpu_memory_utilization 0.9 \
+    --gpu_memory_utilization 0.95 \
     --use_lora True \
     --enable_gradient_checkpointing False \
     --sharding_strategy "shard-grad-op" \
@@ -114,7 +114,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --value_use_lora False \
     --clip_vloss False \
     --norm_adv False \
-    --use_curriculum False \
+    --use_curriculum True \
     --curriculum_temp 1.0 \
     --success_history_window 20 \
     --save_freq 10 \

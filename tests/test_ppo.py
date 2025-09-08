@@ -87,7 +87,8 @@ def test_ppo_multi_gpu():
         "MESA_GL_VERSION_OVERRIDE": "4.1",
         "PYOPENGL_PLATFORM": "egl", 
         "MUJOCO_GL": "egl",
-        "CUDA_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7", # multi-gpu training
+        # "CUDA_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7", # multi-gpu training
+        "CUDA_VISIBLE_DEVICES": "0,1,2,3",
     })
     cmd = [
         "/opt/conda/envs/vlarl/bin/python",
@@ -100,11 +101,12 @@ def test_ppo_multi_gpu():
         "--task_ids", "[0,1,2,3,4,5,6,7,8,9]",  # Modified for testing
         "--run_root_dir", "checkpoints/debug/root",
         "--adapter_tmp_dir", "checkpoints/debug/adapter",
-        "--per_device_train_batch_size", "1",
-        "--local_mini_batch_size", "1",
-        "--local_rollout_batch_size", "1",
-        "--local_rollout_forward_batch_size", "1",
-        "--actor_num_gpus_per_node", "[7]",
+        "--per_device_train_batch_size", "4",
+        "--local_mini_batch_size", "4",
+        "--local_rollout_batch_size", "10",
+        "--local_rollout_forward_batch_size", "10",
+        # "--actor_num_gpus_per_node", "[7]",
+        "--actor_num_gpus_per_node", "[3]",
         "--temperature", "1.7",
         "--num_epochs", "1",
         "--value_init_steps", "0",  # Modified for testing
@@ -115,8 +117,8 @@ def test_ppo_multi_gpu():
         "--cliprange_high", "0.4",
         "--cliprange_low", "0.2",
         "--gamma", "1.0",
-        "--num_steps", "2",  # Modified for testing
-        "--max_env_length", "2",  # Modified for testing
+        "--num_steps", "4",  # Modified for testing
+        "--max_env_length", "4",  # Modified for testing
         "--total_episodes", "100000",
         "--vllm_tensor_parallel_size", "1",
         "--vllm_enforce_eager", "True",

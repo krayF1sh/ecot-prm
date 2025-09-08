@@ -132,8 +132,6 @@ class VideoWrapper(gym.Wrapper):
             log_file=None,
             mp4_path=mp4_path,
         )
-        print(f"Video saved to: {mp4_path}")
-        
         self.frames[env_idx] = []
         self.replay_images[env_idx] = []
     

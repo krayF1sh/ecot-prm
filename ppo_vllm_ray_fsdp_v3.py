@@ -201,11 +201,11 @@ class Args:
     """Number of parallel vec environments"""
     task_ids: Optional[List[int]] = None
     """Task ids to run"""
-    max_env_length: int = 0
+    max_env_length: Optional[int] = None
     """0 for default libero length"""
-    env_gpu_id: int = 0
+    env_gpu_id: Optional[int] = None
     """GPU id for the vectorized environments"""
-    context_length: int = 64
+    context_length: Optional[int] = 64
     """Length of the query"""
 
     # Curriculum learning parameters
@@ -492,6 +492,7 @@ def get_environment(args: Args, mode: str = "train"):
         max_episode_length=args.max_env_length,
         num_envs=args.n_rollout_threads,
         seed=args.seed,
+        rand_init_state=True if mode=="train" else False,
     )
     if args.save_video:
         save_dir = os.path.join(args.exp_dir, "rollouts")
@@ -588,10 +589,10 @@ class PolicyTrainerRayProcess(RayProcess):
 
         register_custom_classes()
         
-        if getattr(args, "vllm_num_engines", 0) > 0:
+        if args.vllm_num_engines > 0:
             # To prevent hanging during NCCL synchronization of weights between deepspeed and vLLM.
             # see https://github.com/vllm-project/vllm/blob/c6b0a7d3ba03ca414be1174e9bd86a97191b7090/vllm/worker/worker_base.py#L445
-            if getattr(args, "vllm_sync_backend", "nccl") == "nccl":
+            if args.vllm_sync_backend == "nccl":
                 os.environ["NCCL_CUMEM_ENABLE"] = "0"
 
         if not dist.is_initialized():
@@ -833,9 +834,7 @@ class PolicyTrainerRayProcess(RayProcess):
     ) -> Dict[str, float]:
         logger.info(f"[Eval] Starting parallel evaluation")
         # dist.barrier()
-
         args = self.args
-
         self.model.eval()
         if args.use_value_model:
             self.value_model.eval()
@@ -845,15 +844,17 @@ class PolicyTrainerRayProcess(RayProcess):
         episodic_lengths = []
         episodic_returns = []
         
-        total_expected_episodes = args.num_trials_per_task * args.num_tasks_per_suite
+        total_expected_episodes = sum(len(eval_envs.initial_states_list[i]) for i in range(eval_envs.num_envs))
         pbar = tqdm.tqdm(
             total=total_expected_episodes,
             desc="[Eval] Episodes",
             dynamic_ncols=True,
             disable=(self._rank != 0)
         )
+
         obs, infos = eval_envs.reset()
         step = 0
+
         while True:
             padding_side = "right"
             num_channels = 3
@@ -900,40 +901,32 @@ class PolicyTrainerRayProcess(RayProcess):
                     if d:
                         episodic_returns.append(r)
                         episodic_lengths.append(infos["step_counts"][i])
-
                 current_success_rate = total_successes / completed_episodes if completed_episodes > 0 else 0.0
                 pbar.update(new_episodes)
                 pbar.set_postfix({
                     'Success Rate': f'{current_success_rate:.3f}',
-                    'Successes': f'{total_successes}/{completed_episodes}'
                 })
                 if self._rank == 0:  # Only log on rank 0
                     cprint(f"[Eval] Completed {completed_episodes}/{total_expected_episodes} episodes, "
                               f"Success Rate: {current_success_rate:.3f} ({total_successes}/{completed_episodes})",
                               "cyan")
-            
             step += 1
-            # Break if all episodes in batch are done
-            # if np.allclose(eval_envs.initial_state_ids, -1):
-            if completed_episodes >= total_expected_episodes:
+            if eval_envs.is_evaluation_complete():
                 break
             obs = next_obs
 
         pbar.close()
-        
-        final_success_rate = total_successes / completed_episodes if completed_episodes > 0 else 0.0
+        final_success_rate = eval_envs.compute_success_rate()
         avg_episodic_length = np.mean(episodic_lengths) if episodic_lengths else 0.0
         avg_episodic_return = np.mean(episodic_returns) if episodic_returns else 0.0
-
         eval_stats = {
             'success_rate': final_success_rate,
             'num_episodes': completed_episodes,
-            'total_successes': total_successes,
             'episodic_length': avg_episodic_length,
             'episodic_return': avg_episodic_return,
         }
         logger.info(f"[Eval] Completed parallel evaluation: "
-                    f"Episodes: {completed_episodes}, Successes: {total_successes}, "
+                    f"Episodes: {completed_episodes}, "
                     f"Success rate: {final_success_rate:.3f}, "
                     f"Avg episode length: {avg_episodic_length:.1f}")
         self.model.train()
@@ -960,8 +953,7 @@ class PolicyTrainerRayProcess(RayProcess):
         local_rollout_indices = slice(self._rank * args.local_rollout_batch_size, (self._rank + 1) * args.local_rollout_batch_size)
 
         args.task_ids = args.task_ids[local_rollout_indices]
-        # args.env_gpu_id = self._rank
-        args.env_gpu_id = 0
+        args.env_gpu_id = self._rank
         logger.info(f"Current Device ID: {self._rank}; Task IDs: {args.task_ids}")
         train_envs = get_environment(args=args, mode="train")
         eval_envs = get_environment(args=args, mode="eval")
@@ -987,7 +979,7 @@ class PolicyTrainerRayProcess(RayProcess):
                 args.vllm_tensor_parallel_size,
             )
             world_size = vllm_num_engines * vllm_tensor_parallel_size + 1
-            backend = getattr(args.vllm_sync_backend, "vllm_sync_backend", "nccl")
+            backend = args.vllm_sync_backend
             group_name = "vllm-inference-group"
             refs = [
                 engine.init_process_group.remote(
@@ -1015,17 +1007,8 @@ class PolicyTrainerRayProcess(RayProcess):
         dist.barrier()
 
         def _broadcast_to_vllm():
-            use_prefix_cache = getattr(args, "enable_prefix_caching", False)
-            cache_reset_refs = []
-            if use_prefix_cache and dist.get_rank() == 0:
-                # clear prefix cache
-                for engine in vllm_engines:
-                    cache_reset_refs.append(engine.reset_prefix_cache.remote())
-
             torch.cuda.empty_cache()
-            # model = self.model.module
             model = self.model
-
             param_names = []
             if is_peft_model(model):
                 with torch.no_grad():
@@ -1067,7 +1050,6 @@ class PolicyTrainerRayProcess(RayProcess):
                 param_list = list(state_dict.items())
                 for i, (name, param) in enumerate(param_list):
                     is_last_param = (i == len(param_list) - 1)
-                    
                     # Fire all vllm engines for broadcast
                     if dist.get_rank() == 0:
                         shape = param.shape
@@ -1077,15 +1059,10 @@ class PolicyTrainerRayProcess(RayProcess):
                             )
                             for engine in vllm_engines
                         ]
-                    
                         # Only broadcast from rank 0
                         dist.broadcast(param.data, 0, group=self.model_update_group)
                         ray.get(refs)
                         refs = None  # Clear refs to free memory
-            
-            if cache_reset_refs:
-                ray.get(cache_reset_refs)
-                
             torch.cuda.empty_cache()
             dist.barrier()
 
@@ -1160,7 +1137,7 @@ class PolicyTrainerRayProcess(RayProcess):
                         unnorm_key=args.unnorm_key,
                         )
                 )
-                # logger.info(f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} seconds")
+                logger.info(f"🔥🔥🔥 Action generation time: {time.time() - generation_start_time:.2f} seconds")
                 response_ids_Q.put((actions, response_ids, response_logprobs))
 
         resume_training_step = 1
@@ -1451,7 +1428,7 @@ class PolicyTrainerRayProcess(RayProcess):
                         else:
                             value = torch.zeros(args.local_rollout_forward_batch_size, device=device)
                         torch.cuda.empty_cache()
-                        # logger.info(f"Value time: {time.time() - start_time} seconds")
+                        logger.info(f"Value time: {time.time() - start_time} seconds")
 
                         # logger.info(f"{value=}")
 
@@ -2035,8 +2012,7 @@ def main(args: Args):
     # train and gather metrics
     resume_training_step = 1
     for _ in range(resume_training_step, args.num_training_steps + 1):
-        result = metrics_queue.get()
-        metrics, global_step = result
+        metrics, global_step = metrics_queue.get()
         for key, value in metrics.items():
             writer.add_scalar(key, value, global_step=global_step)
         if args.use_wandb:
