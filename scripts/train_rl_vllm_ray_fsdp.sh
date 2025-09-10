@@ -41,7 +41,8 @@ DATA_ROOT=${DATA_NAME}_no_noops
 # local_rollout_batch_size=10
 
 # Total H20 GPUs (full)
-per_device_train_batch_size=8
+# per_device_train_batch_size=8   # zero2
+per_device_train_batch_size=4   # ddp
 local_rollout_batch_size=10
 
 # Total 2 A100 GPUs
@@ -105,7 +106,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --vllm_enforce_eager True \
     --enable_prefix_caching False \
     --gpu_memory_utilization 0.9 \
-    --use_lora True \
+    --use_lora False \
     --enable_gradient_checkpointing False \
     --sharding_strategy "shard-grad-op" \
     --offload False \

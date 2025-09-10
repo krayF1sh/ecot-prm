@@ -106,7 +106,8 @@ def init_process_group(
 
 class WorkerWrap(Worker):
     def init_process_group(
-        self, master_address, master_port, rank_offset, world_size, group_name, backend="nccl", use_ray=False
+        self, master_address, master_port, rank_offset, world_size, group_name, backend="nccl", use_ray=False,
+        timeout: Optional[timedelta] = None,
     ):
         """Init torch process group for model weights update"""
         assert torch.distributed.is_initialized(), f"default torch process group must be initialized"
@@ -116,7 +117,9 @@ class WorkerWrap(Worker):
         if use_ray:
             import ray.util.collective as collective
 
-            collective.init_collective_group(world_size=world_size, rank=rank, backend=backend, group_name=group_name)
+            collective.init_collective_group(
+                world_size=world_size, rank=rank, backend=backend, group_name=group_name
+            )
             self._model_update_group = group_name
         else:
             self._model_update_group = init_process_group(
@@ -125,6 +128,7 @@ class WorkerWrap(Worker):
                 world_size=world_size,
                 rank=rank,
                 group_name=group_name,
+                timeout=timeout,
             )
         self._model_update_with_ray = use_ray
         print(
@@ -141,13 +145,11 @@ class WorkerWrap(Worker):
         weight = torch.empty(shape, dtype=dtype, device="cuda")
         if self._model_update_with_ray:
             import ray.util.collective as collective
-
             collective.broadcast(weight, 0, group_name=self._model_update_group)
         else:
             torch.distributed.broadcast(weight, 0, group=self._model_update_group)
 
         self.model_runner.model.load_weights(weights=[(name, weight)])
-
         del weight
         # TODO: should we empty cache if all weights have updated?
         # if empty_cache:
@@ -168,16 +170,17 @@ class LLMRayActor:
     def generate(self, *args, **kwargs):
         return self.llm.generate(*args, **kwargs)
 
-    def init_process_group(self, master_address, master_port, rank_offset, world_size, group_name, backend, use_ray):
+    def init_process_group(
+            self, master_address, master_port, rank_offset, world_size, group_name, backend, use_ray, timeout=None
+        ):
         return self.llm.collective_rpc(
             "init_process_group",
-            args=(master_address, master_port, rank_offset, world_size, group_name, backend, use_ray),
+            args=(master_address, master_port, rank_offset, world_size, group_name, backend, use_ray, timeout),
         )
 
     def update_weight(self, name, dtype, shape, empty_cache=False):
         return self.llm.collective_rpc("update_weight", args=(name, dtype, shape, empty_cache))
     
-
 
 @ray.remote
 class VLARayActor(LLMRayActor):

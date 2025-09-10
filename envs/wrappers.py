@@ -64,8 +64,6 @@ class VideoWrapper(gym.Wrapper):
         prm_rewards = kwargs.get('prm_rewards', None)
         
         obs, rewards, dones, truncated, info = self.env.step(actions, **kwargs)
-        
-        print(f"[VideoWrapper] {dones=}")
 
         pixel_values = obs["pixel_values"]
         # for i in range(min(len(pixel_values), self.num_envs)):
@@ -122,8 +120,8 @@ class VideoWrapper(gym.Wrapper):
             self.episode_counts[env_idx], 
             success=success,
             task_description=str(task_description),
-            log_file=None,
             mp4_path=mp4_path,
+            backend="cv2",
         )
         self.frames[env_idx] = []
         self.replay_images[env_idx] = []

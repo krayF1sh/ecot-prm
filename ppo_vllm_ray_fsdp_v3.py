@@ -663,24 +663,24 @@ class PolicyTrainerRayProcess(RayProcess):
         # cpu_offload = CPUOffload(offload_params=True) if args.offload else None
         cpu_offload = None  # NOTE:  We force turn off CPUOffload for critic because it causes incorrect results when using grad accumulation
 
-        fsdp_precision_policy = MixedPrecision(
-            param_dtype=torch.bfloat16, reduce_dtype=torch.float32, buffer_dtype=torch.float32
-        )
-        self.model = FSDP(
-            model,
-            cpu_offload=cpu_offload,
-            param_init_fn=init_fn,
-            use_orig_params=False,
-            auto_wrap_policy=auto_wrap_policy,
-            device_id=torch.cuda.current_device(),
-            sharding_strategy=fsdp_sharding_strategy,
-            mixed_precision=fsdp_precision_policy,
-            sync_module_states=True,
-            device_mesh=self.device_mesh,
-            forward_prefetch=False,
-        )
-        del model
-        # self.model = model.to(torch.cuda.current_device())    # w/o FSDP
+        # fsdp_precision_policy = MixedPrecision(
+        #     param_dtype=torch.bfloat16, reduce_dtype=torch.float32, buffer_dtype=torch.float32
+        # )
+        # self.model = FSDP(
+        #     model,
+        #     cpu_offload=cpu_offload,
+        #     param_init_fn=init_fn,
+        #     use_orig_params=False,
+        #     auto_wrap_policy=auto_wrap_policy,
+        #     device_id=torch.cuda.current_device(),
+        #     sharding_strategy=fsdp_sharding_strategy,
+        #     mixed_precision=fsdp_precision_policy,
+        #     sync_module_states=True,
+        #     device_mesh=self.device_mesh,
+        #     forward_prefetch=False,
+        # )
+        # del model
+        self.model = model.to(torch.cuda.current_device())    # w/o FSDP
         logger.info("[Actor] Initialized FSDP model")
         log_gpu_memory_usage("[Actor] After model init", rank=self._rank, logger=logger, level=logging.INFO)
         self.policy_optimizer = torch.optim.AdamW(
@@ -761,24 +761,24 @@ class PolicyTrainerRayProcess(RayProcess):
                 value_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
 
             logger.info(f'[Critic] wrap_policy: {auto_wrap_policy}')
-            fsdp_precision_policy = MixedPrecision(
-                param_dtype=torch.float32, reduce_dtype=torch.float32, buffer_dtype=torch.float32
-            )
-            self.value_model = FSDP(
-                value_model,
-                cpu_offload=cpu_offload,
-                param_init_fn=init_fn,
-                use_orig_params=False,
-                device_id=torch.cuda.current_device(),
-                auto_wrap_policy=auto_wrap_policy,
-                sharding_strategy=fsdp_sharding_strategy,
-                mixed_precision=fsdp_precision_policy,
-                sync_module_states=True,
-                device_mesh=self.device_mesh,
-                forward_prefetch=False,
-            )
-            del value_model
-            # self.value_model = value_model.to(torch.cuda.current_device())  # w/o FSDP
+            # fsdp_precision_policy = MixedPrecision(
+            #     param_dtype=torch.float32, reduce_dtype=torch.float32, buffer_dtype=torch.float32
+            # )
+            # self.value_model = FSDP(
+            #     value_model,
+            #     cpu_offload=cpu_offload,
+            #     param_init_fn=init_fn,
+            #     use_orig_params=False,
+            #     device_id=torch.cuda.current_device(),
+            #     auto_wrap_policy=auto_wrap_policy,
+            #     sharding_strategy=fsdp_sharding_strategy,
+            #     mixed_precision=fsdp_precision_policy,
+            #     sync_module_states=True,
+            #     device_mesh=self.device_mesh,
+            #     forward_prefetch=False,
+            # )
+            # del value_model
+            self.value_model = value_model.to(torch.cuda.current_device())  # w/o FSDP
             log_gpu_memory_usage("[Critic] After value model FSDP wrapping", rank=self._rank, logger=logger, level=logging.INFO)
             self.value_optimizer = torch.optim.AdamW(
                 self.value_model.parameters(),
@@ -820,7 +820,6 @@ class PolicyTrainerRayProcess(RayProcess):
         device: torch.device,
     ) -> Dict[str, float]:
         logger.info(f"[Eval] Starting parallel evaluation")
-        # dist.barrier()
         args = self.args
         self.model.eval()
         if args.use_value_model:
@@ -928,6 +927,7 @@ class PolicyTrainerRayProcess(RayProcess):
         args = self.args
         hf_config = deepcopy(self.model.config)
         timer = TimingManager()
+        device = torch.device(self._local_rank)
 
         accelerator = Namespace()
         accelerator.process_index = self._rank
@@ -970,6 +970,7 @@ class PolicyTrainerRayProcess(RayProcess):
                     group_name=group_name,
                     backend=backend,
                     use_ray=False,
+                    timeout=timeout_long_ncll,
                 )
                 for i, engine in enumerate(vllm_engines)
             ]
@@ -1153,8 +1154,6 @@ class PolicyTrainerRayProcess(RayProcess):
             thread_eval.start()
             logger.info("[vLLM] vllm generate thread starts")
 
-        device = torch.device(self._local_rank)
-
         num_channels = 3
         if args.model_family == "openvla":
             num_channels = num_channels * 2 # stack for dinosiglip
@@ -1328,6 +1327,7 @@ class PolicyTrainerRayProcess(RayProcess):
                     )
                 # Eval the current model
                 if (args.eval_freq > 0 and training_step % args.eval_freq == 0):
+                    dist.barrier()
                     if accelerator.is_main_process:
                         logger.info(f"[Eval] Running evaluation at training step {training_step}")
                         with timer.timer("evaluation"):
@@ -1744,8 +1744,8 @@ class PolicyTrainerRayProcess(RayProcess):
                 "episode": episode,
                 "training_step": training_step,
                 "lr": self.policy_scheduler.get_last_lr()[0],
-                **global_metrics,  # Unpack all the reduced metrics
-                **timer.get_log(),  # Unpack all the timing logs
+                **global_metrics,
+                **timer.get_log(),
             }
             if accelerator.is_main_process:
                 print_rich_single_line_metrics(metrics)
