@@ -321,6 +321,11 @@ def add_padding(sequences: List[List[int]], pad_token_id: int, length: int) -> L
 def remove_padding(sequences: List[List[int]], pad_token_id: int) -> List[List[int]]:
     return [[inneritem for inneritem in item if inneritem != pad_token_id] for item in sequences]
 
+# @torch.compile(dynamic=True)
+def log_softmax_and_gather(logits: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
+    logprobs = logits.log_softmax(dim=-1)
+    return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
+
 def forward(
         model: torch.nn.Module,
         query_response: torch.LongTensor | Tuple[torch.LongTensor, torch.FloatTensor],
@@ -364,29 +369,20 @@ def forward(
     # https://github.com/OpenRLHF/OpenRLHF/pull/634
     output["logits"] = output["logits"].to(torch.float32)
 
-    # Get the maximum response length to handle variable length responses
     max_response_len = response.size(1)
     batch_size = query_response.shape[0]
     vocab_size = output.logits.size(-1)
-    
-    # Create a tensor to hold all logits with proper padding
+
     all_logits = torch.zeros(batch_size, max_response_len, vocab_size, 
                             device=output.logits.device, dtype=output.logits.dtype)
-    
-    # Extract logits for each sample based on its context length
     for i in range(batch_size):
         sample_logits = output.logits[i, context_length[i] - 1 : context_length[i] - 1 + response.size(1)]
         all_logits[i, :sample_logits.size(0)] = sample_logits
 
     all_logits.div_(temperature + 1e-7)
     
-    all_logprob = F.log_softmax(all_logits, dim=-1)
-    logprob = torch.gather(all_logprob, 2, response.unsqueeze(-1)).squeeze(-1)
-
-    return (
-        logprob,    # [B, max_response_length]
-        all_logits, # [B, max_response_length, vocab_size]
-    )
+    logprob = log_softmax_and_gather(all_logits, response)  # [B, max_response_length]
+    return logprob, all_logits
 
 def get_reward(
     model: torch.nn.Module, queries: torch.Tensor, pixel_values: torch.Tensor, pad_token_id: int, context_length: int=None

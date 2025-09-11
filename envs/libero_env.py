@@ -32,6 +32,7 @@ class LiberoVecEnv(gym.Env):
         max_episode_length: Optional[int] = None,
         resolution: Optional[int] = 256,
         resize_size: Optional[Tuple[int, int]] = None,
+        penalty_value: Optional[float] = 0.0,
     ):
         super().__init__()
         self.task_suite_name = task_suite_name
@@ -46,6 +47,7 @@ class LiberoVecEnv(gym.Env):
         self.seed_ = seed
         self.rand_init_state = rand_init_state
         self.num_steps_wait = num_steps_wait
+        self.penalty_value = penalty_value
         
         if len(task_ids) < self.num_envs:
             raise ValueError(f"Not enough task_ids ({len(task_ids)}) for n_envs ({self.num_envs})")
@@ -155,16 +157,26 @@ class LiberoVecEnv(gym.Env):
         info = {
             "task_descriptions": prompts,
             "step_counts": self.step_counts.copy(),
+            "penalty_nums": np.array([0] * self.num_envs),
         }
         # print(f"Env reset time: {time.time() - reset_start_time:.2f} seconds")
         return env_output, info
     
     def step(self, actions, **kwargs):
+        dummy = np.array(get_libero_dummy_action(), dtype=float)
+        is_dummy_mask = np.all(np.isclose(actions, dummy, atol=1e-6), axis=1)
+
         actions = normalize_gripper_action(actions, binarize=True)
         if self.model_family == "openvla":
             actions = invert_gripper_action(actions)
         
         obs_list, rewards, dones, infos = self.envs.step(actions)
+        
+        # Apply penalty where the input action was the dummy action
+        for i, is_dummy in enumerate(is_dummy_mask):
+            if is_dummy:
+                rewards[i] += float(self.penalty_value)
+        
         self.step_counts += 1
         
         for i in range(self.num_envs):
@@ -218,6 +230,7 @@ class LiberoVecEnv(gym.Env):
         info = {
             "task_descriptions": prompts,
             "step_counts": self.step_counts.copy(),
+            "penalty_nums": is_dummy_mask,
         }
         truncated = np.array([False] * self.num_envs)
 

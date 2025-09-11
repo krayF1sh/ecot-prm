@@ -484,6 +484,7 @@ def get_environment(args: Args, mode: str = "train"):
         num_steps_wait=args.num_steps_wait,
         seed=args.seed,
         rand_init_state=True if mode=="train" else False,
+        penalty_value=args.penalty_reward_value,
     )
     if mode == "train" and args.use_curriculum:
         env = CurriculumWrapper(
@@ -839,6 +840,7 @@ class PolicyTrainerRayProcess(RayProcess):
 
         episodic_lengths = []
         episodic_returns = []
+        episodic_penalties = []
         total_expected_episodes = sum(len(eval_envs.initial_states_list[i]) for i in range(eval_envs.num_envs))
         pbar = tqdm.tqdm(
             total=total_expected_episodes,
@@ -892,6 +894,7 @@ class PolicyTrainerRayProcess(RayProcess):
                     if d:
                         episodic_returns.append(r)
                         episodic_lengths.append(infos["step_counts"][i])
+                        episodic_penalties.append(infos["penalty_nums"][i])
                 completed_status = eval_envs.get_completed_status()
                 current_success_rate = completed_status["success_rate"]
                 current_episodes = completed_status["completed_episodes"]
@@ -911,9 +914,11 @@ class PolicyTrainerRayProcess(RayProcess):
         final_episodes = completed_status["completed_episodes"]
         avg_episodic_length = np.mean(episodic_lengths) if episodic_lengths else 0.0
         avg_episodic_return = np.mean(episodic_returns) if episodic_returns else 0.0
+        avg_episodic_penalty = np.mean(episodic_penalties) if episodic_penalties else 0.0
         eval_stats = {
             'episodic_length': avg_episodic_length,
             'episodic_return': avg_episodic_return,
+            'episodic_penalty': avg_episodic_penalty,
             **completed_status,
         }
         logger.info(f"[Eval] Completed parallel evaluation: "
@@ -1087,7 +1092,7 @@ class PolicyTrainerRayProcess(RayProcess):
             logprobs=1,
         )
         generation_config_eval = SamplingParams(
-            temperature=1.0,
+            temperature=0.0,
             max_tokens=args.response_length,
             include_stop_str_in_output=False,
             detokenize=False,
@@ -1251,6 +1256,7 @@ class PolicyTrainerRayProcess(RayProcess):
         vf_loss_stats = torch.zeros(stats_shape, device=device)
         vf_grad_norm_stats = torch.zeros(stats_shape, device=device)
         ratio_stats = torch.zeros(stats_shape, device=device)
+        entropy_stats = torch.zeros(stats_shape, device=device)
         local_metrics = {}
         episode = args.rollout_batch_size * (resume_training_step - 1)   # NOTE: we start from 1
 
@@ -1325,6 +1331,7 @@ class PolicyTrainerRayProcess(RayProcess):
         for training_step in range(resume_training_step, args.num_training_steps + 1):
             episodic_returns = []
             episodic_lengths = []
+            episodic_penalties = []
             episode += args.rollout_batch_size  # rollout batch size is the number of parallel environments
 
             if training_step != 1:
@@ -1509,6 +1516,7 @@ class PolicyTrainerRayProcess(RayProcess):
                     if local_dones[i]:
                         episodic_returns.append(1.0 if local_rewards[i].item() > 0 else 0.0)
                         episodic_lengths.append(local_infos["step_counts"][i])
+                        episodic_penalties.append(local_infos["penalty_nums"][i])
 
                 local_token_obs["input_ids"] = local_token_obs["input_ids"].to(dtype=torch.long)
                 queries_next = local_token_obs["input_ids"]
@@ -1663,9 +1671,6 @@ class PolicyTrainerRayProcess(RayProcess):
                                 self.policy_optimizer.zero_grad()
                                 pg_loss.backward()
 
-                                with torch.no_grad():
-                                    approxkl = ((-logprobs_diff).exp() - 1 + logprobs_diff).mean()  # kl3
-
                                 if isinstance(self.model, FSDP):
                                     policy_grad_norm = self.model.clip_grad_norm_(max_norm=args.policy_max_grad_norm)
                                 else:
@@ -1682,21 +1687,23 @@ class PolicyTrainerRayProcess(RayProcess):
                                     vf_clipfrac_stats[epoch_idx, minibatch_idx, gradient_accumulation_idx] = vf_clipfrac
                                     vf_grad_norm_stats[epoch_idx, minibatch_idx, gradient_accumulation_idx] = value_grad_norm
 
-                                    # Calculate sum of value model parameter norms
                                     value_param_norm_sum = torch.tensor(0.0, device=device)
                                     for param in self.value_model.parameters():
                                         value_param_norm_sum += torch.norm(param.data.float(), p=2)
                                     local_metrics["value/param_norm_sum"] = value_param_norm_sum
 
                                 if training_step > args.value_init_steps:
+                                    prob_dist = torch.nn.functional.softmax(new_logits, dim=-1)
+                                    entropy = torch.logsumexp(new_logits, dim=-1) - torch.sum(prob_dist * new_logits, dim=-1)   # [B, T]
+                                    approxkl = ((-logprobs_diff).exp() - 1 + logprobs_diff).mean()  # kl3
                                     pg_clipfrac = (pg_losses2 > pg_losses).float().mean()
                                     approxkl_stats[epoch_idx, minibatch_idx, gradient_accumulation_idx] = approxkl
                                     pg_clipfrac_stats[epoch_idx, minibatch_idx, gradient_accumulation_idx] = pg_clipfrac
                                     pg_loss_stats[epoch_idx, minibatch_idx, gradient_accumulation_idx] = pg_loss
                                     pg_grad_norm_stats[epoch_idx, minibatch_idx, gradient_accumulation_idx] = policy_grad_norm
+                                    entropy_stats[epoch_idx, minibatch_idx, gradient_accumulation_idx] = entropy.mean()
                                     ratio_stats[epoch_idx, minibatch_idx, gradient_accumulation_idx] = ratio.mean()
 
-                                # Calculate sum of policy model parameter norms
                                 policy_param_norm_sum = torch.tensor(0.0, device=device)
                                 for param in self.model.parameters():
                                     policy_param_norm_sum += torch.norm(param.data.float(), p=2)
@@ -1729,6 +1736,7 @@ class PolicyTrainerRayProcess(RayProcess):
                 local_metrics["policy/policy_grad_norm"] = pg_grad_norm_stats.mean()
                 local_metrics["policy/ratio_avg"] = ratio_stats.mean()
                 local_metrics["policy/ratio_std"] = ratio_stats.std() if ratio_stats.shape[0] > 1 else torch.tensor(0, device=device)
+                local_metrics["policy/entropy_avg"] = entropy_stats.mean()
                 local_metrics["loss/policy_avg"] = pg_loss_stats.mean()
                 if args.use_value_model:
                     local_metrics["loss/value_avg"] = vf_loss_stats.mean()
@@ -1750,12 +1758,14 @@ class PolicyTrainerRayProcess(RayProcess):
                 {
                     "objective/episodic_return": sum(episodic_returns)/len(episodic_returns) if len(episodic_returns) > 0 else 0,
                     "objective/episodic_length": sum(episodic_lengths)/len(episodic_lengths) if len(episodic_lengths) > 0 else 0,
+                    "objective/episodic_penalties": sum(episodic_penalties)/len(episodic_penalties) if len(episodic_penalties) > 0 else 0,
                 }
             )
             metrics = {
                 "episode": episode,
                 "training_step": training_step,
                 "lr": self.policy_scheduler.get_last_lr()[0],
+                "vlr": self.value_scheduler.get_last_lr()[0] if args.use_value_model else 0,
                 **global_metrics,
                 **timer.get_log(),
             }

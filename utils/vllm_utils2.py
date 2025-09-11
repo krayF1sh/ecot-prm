@@ -221,10 +221,11 @@ class VLARayActor(LLMRayActor):
         ])
         # Find first occurrence of stop token
         trunc_idxs = np.argmax(response_token_ids == stop_token_id, axis=1)
+        # print(f"{response_token_ids=}, {trunc_idxs=}")
         predicted_action_token_ids = np.zeros((response_token_ids.shape[0], action_dim), dtype=np.int64)
         for i in range(response_token_ids.shape[0]):
-            if trunc_idxs[i] >= action_dim:
-                predicted_action_token_ids[i] = response_token_ids[i, trunc_idxs[i] - action_dim:trunc_idxs[i]]
+            if trunc_idxs[i] == action_dim:
+                predicted_action_token_ids[i] = response_token_ids[i, :action_dim]
 
         discretized_actions = self.vocab_size - predicted_action_token_ids
         discretized_actions = np.clip(discretized_actions - 1, a_min=0, a_max=self.bin_centers.shape[0] - 1)
@@ -238,6 +239,13 @@ class VLARayActor(LLMRayActor):
             0.5 * (normalized_actions + 1) * (action_high - action_low) + action_low,
             normalized_actions,
         )
+        # If the generated sequence length doesn't match the required action_dim,
+        # set a fixed dummy action for that sample to penalize it.
+        dummy_action = np.zeros(action_dim, dtype=actions.dtype)
+        dummy_action[-1] = -1.0
+        for i in range(response_token_ids.shape[0]):
+            if trunc_idxs[i] != action_dim:
+                actions[i] = dummy_action
         return actions, response_ids, response_logprobs
 
     @staticmethod

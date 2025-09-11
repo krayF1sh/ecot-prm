@@ -11,6 +11,7 @@ def test_ppo_multi_gpu():
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     env = os.environ.copy()
     devices = "0,1,2,3"
+    # devices = "0,1"
     env.update({
         "MESA_GL_VERSION_OVERRIDE": "4.1",
         "PYOPENGL_PLATFORM": "egl", 
