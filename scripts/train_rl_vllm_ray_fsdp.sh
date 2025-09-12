@@ -94,8 +94,8 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --temperature 1.7 \
     --num_epochs 1 \
     --value_init_steps 3 \
-    --learning_rate 7e-6 \
-    --value_learning_rate 2e-5 \
+    --learning_rate 8e-6 \
+    --value_learning_rate 5e-5 \
     --policy_max_grad_norm 1.0 \
     --value_max_grad_norm 1.0 \
     --cliprange_high 0.4 \
@@ -116,7 +116,7 @@ CUDA_VISIBLE_DEVICES=$GPUS /opt/conda/envs/vlarl/bin/python \
     --value_model_type "vla" \
     --value_use_lora False \
     --clip_vloss False \
-    --norm_adv False \
+    --norm_adv True \
     --use_curriculum False \
     --curriculum_temp 1.0 \
     --curriculum_min_prob 0.0 \

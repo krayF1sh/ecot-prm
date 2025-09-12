@@ -10,13 +10,13 @@ import os
 def test_ppo_multi_gpu():
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     env = os.environ.copy()
-    devices = "0,1,2,3"
+    # devices = "0,1,2,3"
+    devices = "4,5,6,7"
     # devices = "0,1"
     env.update({
         "MESA_GL_VERSION_OVERRIDE": "4.1",
         "PYOPENGL_PLATFORM": "egl", 
         "MUJOCO_GL": "egl",
-        # "CUDA_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7", # multi-gpu training
         "CUDA_VISIBLE_DEVICES": devices,
     })
     per_device_train_batch_size=4   # ddp
@@ -52,7 +52,7 @@ def test_ppo_multi_gpu():
         "--gamma", "1.0",
         "--num_steps", "8",  # Modified for testing
         # "--num_steps", "128",
-        # "--max_env_length", "8",  # Modified for testing
+        "--max_env_length", "8",  # Modified for testing
         "--total_episodes", "100000",
         "--vllm_tensor_parallel_size", "1",
         "--vllm_enforce_eager", "True",
@@ -68,9 +68,9 @@ def test_ppo_multi_gpu():
         "--value_model_type", "vla",
         "--value_use_lora", "False",
         "--clip_vloss", "False",
-        "--norm_adv", "False",
-        # "--use_curriculum", "True",
-        "--use_curriculum", "False",
+        "--norm_adv", "True",
+        "--use_curriculum", "True",
+        # "--use_curriculum", "False",
         "--curriculum_temp", "1.0",
         "--curriculum_min_prob", "0.0",
         "--save_freq", "10",  # Save more frequently for testing

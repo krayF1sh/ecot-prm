@@ -33,6 +33,7 @@ class LiberoVecEnv(gym.Env):
         resolution: Optional[int] = 256,
         resize_size: Optional[Tuple[int, int]] = None,
         penalty_value: Optional[float] = 0.0,
+        state_sampler: Optional[callable] = None,
     ):
         super().__init__()
         self.task_suite_name = task_suite_name
@@ -104,6 +105,7 @@ class LiberoVecEnv(gym.Env):
         self.current_state_indices = np.zeros(self.num_envs, dtype=int)
         self.task_state_results = {}  # {(task_id, state_id): [success_results]}
         self.current_task_state_pairs = []  # Current (task_id, state_id) for each env
+        self.state_sampler = state_sampler  # Sampler hook to choose state_id
         
     def _get_max_step(self, task_suite_name: str) -> int:
         task_max_steps = {
@@ -124,10 +126,11 @@ class LiberoVecEnv(gym.Env):
         init_states = []
         for i in range(self.num_envs):
             task_id = self.task_ids[i % len(self.task_ids)]
-            if self.rand_init_state:
+            if self.state_sampler is not None:
+                state_id = int(self.state_sampler(task_id=task_id, n_states=len(self.initial_states_list[i])))
+            elif self.rand_init_state:
                 state_id = np.random.randint(0, len(self.initial_states_list[i]))
             else:
-                # state_id = self.current_state_indices[i] % len(self.initial_states_list[i])
                 state_id = 0
                 self.current_state_indices[i] += 1
             init_states.append(self.initial_states_list[i][state_id])
@@ -161,7 +164,7 @@ class LiberoVecEnv(gym.Env):
         }
         # print(f"Env reset time: {time.time() - reset_start_time:.2f} seconds")
         return env_output, info
-    
+
     def step(self, actions, **kwargs):
         dummy = np.array(get_libero_dummy_action(), dtype=float)
         is_dummy_mask = np.all(np.isclose(actions, dummy, atol=1e-6), axis=1)
@@ -198,7 +201,10 @@ class LiberoVecEnv(gym.Env):
             dummy_actions = []
             for i in done_indices:
                 task_id = self.task_ids[i % len(self.task_ids)]
-                if self.rand_init_state:
+                if self.state_sampler is not None:
+                    state_id = int(self.state_sampler(task_id=task_id, n_states=len(self.initial_states_list[i])))
+                    state_id = max(0, min(state_id, len(self.initial_states_list[i]) - 1))
+                elif self.rand_init_state:
                     state_id = np.random.randint(0, len(self.initial_states_list[i]))
                 else:
                     state_id = self.current_state_indices[i] % len(self.initial_states_list[i])
@@ -210,7 +216,7 @@ class LiberoVecEnv(gym.Env):
             self.envs.reset(id=done_indices.tolist())
             obs = self.envs.set_init_state(new_initial_states, id=done_indices.tolist())
 
-            for _ in range(self.num_steps_wait): # Stablize the env
+            for _ in range(self.num_steps_wait):  # Stabilize the env
                 obs, _, _, _ = self.envs.step(dummy_actions, id=done_indices.tolist())
 
             for i, done_idx in enumerate(done_indices):

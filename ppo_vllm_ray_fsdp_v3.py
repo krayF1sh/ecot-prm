@@ -463,7 +463,7 @@ def calculate_runtime_args(args: Args,):
     if args.use_lora:
         exp_id += f"+lora"
     if args.norm_adv:
-        exp_id += f"+norm_adv"
+        exp_id += f"+nadv"
     if args.use_curriculum:
         exp_id += f"+cl"
     # if args.image_aug:
@@ -1596,7 +1596,8 @@ class PolicyTrainerRayProcess(RayProcess):
                             micro_batch_end = micro_batch_start + args.per_device_train_batch_size
                             micro_batch_inds = mini_batch_inds[micro_batch_start:micro_batch_end]
                             mb_advantage = b_advantages[micro_batch_inds]
-                            if args.norm_adv and mb_advantage.shape[0] > 8:
+                            # if args.norm_adv and mb_advantage.shape[0] >= 8:
+                            if args.norm_adv:
                                 mb_advantage = (mb_advantage - mb_advantage.mean()) / (mb_advantage.std() + 1e-8)
                             mb_responses = b_responses[micro_batch_inds]
                             mb_queries = b_queries[micro_batch_inds]
@@ -1725,7 +1726,7 @@ class PolicyTrainerRayProcess(RayProcess):
             # Update metrics
             # logger.info("start metrics")
             with torch.no_grad():
-                local_metrics["objective/entropy"] = (-b_logprobs).sum(1).mean()    # NOTE: this will be biased
+                local_metrics["objective/entropy"] = (-b_logprobs).sum(1).mean()
                 local_metrics["objective/entropy_vllm"] = (-vllm_logprobs).sum(1).mean()
                 local_metrics["objective/scores"] = scores.mean()
                 local_metrics["objective/scores_std"] = scores.std() if scores.shape[0] > 1 else torch.tensor(0, device=device)
@@ -1742,11 +1743,6 @@ class PolicyTrainerRayProcess(RayProcess):
                     local_metrics["loss/value_avg"] = vf_loss_stats.mean()
                     local_metrics["value/value_grad_norm"] = vf_grad_norm_stats.mean()
                     local_metrics["value/clipfrac_avg"] = vf_clipfrac_stats.mean()
-                    if "value/param_norm_sum" not in local_metrics: # Ensure it's initialized if not hit in loop
-                        local_metrics["value/param_norm_sum"] = torch.tensor(0.0, device=device)
-
-                if "policy/param_norm_sum" not in local_metrics: # Ensure it's initialized if not hit in loop (e.g. value_init_steps)
-                    local_metrics["policy/param_norm_sum"] = torch.tensor(0.0, device=device)
 
             # Convert metrics to tensors for reduction
             metric_keys = list(local_metrics.keys())
