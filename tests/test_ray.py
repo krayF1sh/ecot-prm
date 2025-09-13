@@ -1,14 +1,29 @@
 """
-Simple test to verify GPU configuration and Ray setup.
-This can be run independently to check if the environment is set up correctly.
+Usage:
+    pytest tests/test_ray.py -s
 """
 
 import os
 import ray
 import torch
+import pytest
 
-def test_gpu_setup():
-    """Test GPU configuration"""
+@pytest.fixture(scope="module")
+def ray_init():
+    # Set environment variables for testing
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,7"
+    if not ray.is_initialized():
+        ray.init(
+            num_gpus=4,
+            num_cpus=8,
+            ignore_reinit_error=True,
+            include_dashboard=False,
+            log_to_driver=False
+        )
+    yield
+    ray.shutdown()
+
+def test_gpu_setup(ray_init):
     print("=== GPU Configuration Test ===")
     
     # Check CUDA_VISIBLE_DEVICES
@@ -24,19 +39,8 @@ def test_gpu_setup():
     
     print()
 
-def test_ray_setup():
-    """Test Ray configuration"""
+def test_ray_setup(ray_init):
     print("=== Ray Configuration Test ===")
-    
-    # Initialize Ray if not already initialized
-    if not ray.is_initialized():
-        ray.init(
-            num_gpus=4,
-            num_cpus=8,
-            ignore_reinit_error=True,
-            include_dashboard=False,
-            log_to_driver=False
-        )
     
     # Check Ray cluster resources
     resources = ray.cluster_resources()
@@ -59,24 +63,6 @@ def test_ray_setup():
     for result in results:
         print(f"  Worker {result['worker_id']}: {result}")
     
-    ray.shutdown()
     print("Ray test completed successfully!")
     
     print()
-
-def main():
-    """Run all configuration tests"""
-    print("VLA-RL Environment Configuration Test")
-    print("=" * 50)
-    
-    # Set environment variables for testing
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3,7"
-    os.environ["MUJOCO_EGL_DEVICE_ID"] = "1,2,3,7"
-    
-    test_gpu_setup()
-    test_ray_setup()
-    
-    print("Configuration test completed!")
-
-if __name__ == "__main__":
-    main()
