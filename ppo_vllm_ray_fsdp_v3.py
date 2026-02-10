@@ -351,6 +351,8 @@ class Args:
     """the KL estimator to use"""
     process_reward_model: bool = False
     """the process reward model (prm), for dense reward"""
+    use_ecot_reward: bool = False
+    """use ECoT-based dense reward"""
     num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
     norm_adv: bool = False
@@ -492,6 +494,11 @@ def get_environment(args: Args, mode: str = "train"):
             temp=args.curriculum_temp,
             min_prob=args.curriculum_min_prob,
         )
+
+    if mode == "train" and args.use_ecot_reward:
+        from envs.ecot_reward_wrapper import ECoTRewardWrapper
+        env = ECoTRewardWrapper(env, env.task_descriptions[0])
+
     if mode == "train" and args.save_video:
         save_dir = os.path.join(args.exp_dir, "rollouts")
         if os.path.exists(save_dir):
