@@ -62,6 +62,14 @@ def get_reward_rule_based(progress, gripper_state, task_phase="reach"):
         if progress == "approaching target" and gripper_state == "closed": return 1
     return 0
 
+def get_target_pos_from_task(task, raw_obs):
+    "Extract target object position from task description and raw observations"
+    task_lower = task.lower()
+    obj_keys = [k for k in raw_obs.keys() if k.endswith("_pos") and not k.startswith("robot")]
+    for key in obj_keys:
+        obj_name = key.replace("_pos", "").replace("_", " ").replace("1", "").replace("2", "").strip()
+        if obj_name in task_lower: return raw_obs[key]
+    return None
 
 class ECoTPRM(nn.Module):
     "Process Reward Model with Embodied Chain-of-Thought reasoning"

@@ -174,7 +174,7 @@ class LiberoVecEnv(gym.Env):
             actions = invert_gripper_action(actions)
         
         obs_list, rewards, dones, infos = self.envs.step(actions)
-        
+        # if self.step_counts[0] == 1: print(f"DEBUG obs keys: {obs_list[0].keys()}")
         # Apply penalty where the input action was the dummy action
         for i, is_dummy in enumerate(is_dummy_mask):
             if is_dummy:
@@ -233,16 +233,22 @@ class LiberoVecEnv(gym.Env):
             pre_thought_list=None, center_crop=True
         )
         env_output = EnvOutput(pixel_values=img_list, prompts=prompt_list)
+        raw_obs_list = []
+        for obs in obs_list:
+            raw = {k: v for k, v in obs.items() if k.endswith("_pos") or k.endswith("_qpos")}
+            raw_obs_list.append(raw)
         info = {
             "task_descriptions": prompts,
             "step_counts": self.step_counts.copy(),
             "penalty_nums": is_dummy_mask,
+            "raw_obs": raw_obs_list,
         }
         truncated = np.array([False] * self.num_envs)
 
         for i, done in enumerate(dones):
             if done:
                 self.step_counts[i] = 0
+
         return env_output, np.array(rewards), np.array(dones), truncated, info
 
     def is_eval_complete(self) -> bool:
