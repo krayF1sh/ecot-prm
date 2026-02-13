@@ -59,10 +59,10 @@ class QwenProcessRM(nn.Module):
             )
         else:
             self.model = Qwen2VLForConditionalGeneration.from_pretrained(self.prm_model_name_or_path, 
-                                                            device_map="auto", 
-                                                            torch_dtype=torch.bfloat16,
-                                                            attn_implementation="flash_attention_2",
-                                                            )
+            device_map="auto", 
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+            )
             if self.prm_checkpoint_path is not None:
                 self.model = PeftModel.from_pretrained(self.model, self.prm_checkpoint_path)
                 # self.model.merge_and_unload()     # for critic training
